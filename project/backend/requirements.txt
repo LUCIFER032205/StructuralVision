@@ -1,0 +1,9 @@
+fastapi
+uvicorn[standard]
+python-multipart
+ultralytics
+onnxruntime
+pillow
+numpy
+supabase
+python-jose[cryptography]

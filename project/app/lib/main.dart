@@ -1,0 +1,44 @@
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
+
+import 'config.dart';
+import 'theme.dart';
+import 'screens/login_screen.dart';
+import 'screens/camera_screen.dart';
+
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  SystemChrome.setSystemUIOverlayStyle(const SystemUiOverlayStyle(
+    statusBarColor: Colors.transparent,
+    statusBarIconBrightness: Brightness.light,
+    systemNavigationBarColor: AppColors.bg,
+    systemNavigationBarIconBrightness: Brightness.light,
+  ));
+  await AppConfig.load();
+  await Supabase.initialize(
+    url: AppConfig.supabaseUrl,
+    publishableKey: AppConfig.supabaseAnonKey,
+  );
+  runApp(const ProviderScope(child: App()));
+}
+
+final authStateProvider = StreamProvider<AuthState>(
+    (ref) => Supabase.instance.client.auth.onAuthStateChange);
+
+class App extends ConsumerWidget {
+  const App({super.key});
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    ref.watch(authStateProvider);
+    final signedIn = Supabase.instance.client.auth.currentSession != null;
+    return MaterialApp(
+      title: 'StructuralVision',
+      theme: buildAppTheme(),
+      debugShowCheckedModeBanner: false,
+      home: signedIn ? const CameraScreen() : const LoginScreen(),
+    );
+  }
+}

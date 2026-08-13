@@ -1,0 +1,65 @@
+# ── Secrets ──────────────────────────────────────────────────────────────────
+.env
+*.env
+secrets.dart
+google-services.json
+GoogleService-Info.plist
+
+# ── Datasets (large image sets — download separately) ────────────────────────
+datasets/
+
+# ── ML model weights (large binaries) ────────────────────────────────────────
+*.pt
+*.pth
+*.weights
+*.onnx
+*.tflite
+
+# ── Executables / tools ───────────────────────────────────────────────────────
+ngrok.exe
+*.exe
+*.dll
+
+# ── Node / JS ────────────────────────────────────────────────────────────────
+node_modules/
+npm-debug.log*
+yarn-error.log*
+
+# ── Python ────────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+env/
+*.egg-info/
+dist/
+.pytest_cache/
+.mypy_cache/
+
+# ── Flutter / Dart ────────────────────────────────────────────────────────────
+project/app/build/
+project/app/.dart_tool/
+project/app/.flutter-plugins
+project/app/.flutter-plugins-dependencies
+project/app/.packages
+project/app/pubspec.lock
+
+# ── Android ───────────────────────────────────────────────────────────────────
+project/app/android/.gradle/
+project/app/android/app/build/
+project/app/android/local.properties
+project/app/android/key.properties
+
+# ── Build artefacts (root-level) ──────────────────────────────────────────────
+build/
+*.class
+*.jar
+
+# ── Claude Code session data ──────────────────────────────────────────────────
+.claude/
+
+# ── OS noise ──────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini

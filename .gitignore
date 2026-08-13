@@ -63,3 +63,5 @@ build/
 .DS_Store
 Thumbs.db
 desktop.ini
+"project/backend/static/*.apk" 
+project/git_updated.md

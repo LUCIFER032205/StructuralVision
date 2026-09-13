@@ -70,8 +70,9 @@ def detect_cracks(img: Image.Image):
     """-> list of {bbox[x1,y1,x2,y2], polygon[[x,y]...], confidence, area_ratio}."""
     yolo, _ = load_models()
     img_area = float(img.width * img.height)
-    # conf 0.5: default 0.25 flagged bag seams / curtain edges as cracks
-    res = yolo.predict(img, conf=0.5, verbose=False)[0]
+    # conf 0.4: v4 model scores 99.0% image accuracy (199/200 cracks, 3/200 false alarms on SDNET2018);
+    # v2 needed 0.5 because 0.25 flagged bag seams / curtain edges as cracks
+    res = yolo.predict(img, imgsz=1024, conf=0.4, verbose=False)[0]
     out = []
     if res.masks is None:
         return out

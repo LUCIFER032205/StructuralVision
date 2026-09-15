@@ -1,17 +1,19 @@
 # Demo Kit — curated crack photos
 
-6 images verified against the live pipeline with the **retrained stage2 model**
-(2026-07-19), 2 per risk level. For the demo: open each on a second screen/print
-and scan it with the phone camera.
+6 images, re-verified 2026-09-15 against the **v4 model** (conf 0.4, iou 0.45),
+scanned as component **column**. Labels are the intended severity; `v4 risk` is
+what the pipeline returns now.
 
-| file | risk | area ratio | cracks |
-|---|---|---|---|
-| high_1.jpg | HIGH | 0.112 | 2 |
-| high_2.jpg | HIGH | 0.075 | 3 |
-| medium_1.jpg | MEDIUM | 0.025 | 1 |
-| medium_2.jpg | MEDIUM | 0.025 | 1 |
-| low_1.jpg | LOW | 0.008 | 1 (tiny) |
-| low_2.jpg | LOW | 0 | 0 (clean wall) |
+| file | label | v4 risk | area ratio | cracks |
+|---|---|---|---|---|
+| high_1.jpg | HIGH | HIGH | 0.056 | 1 |
+| high_2.jpg | HIGH | MEDIUM | 0.043 | 2 (1 tagged paint) |
+| medium_1.jpg | MEDIUM | MEDIUM | 0.023 | 1 |
+| medium_2.jpg | MEDIUM | LOW | 0.026 | 1 (tagged paint) |
+| low_1.jpg | LOW | LOW | 0.009 | 1 (tiny) |
+| low_2.jpg | LOW | LOW | 0 | 0 (clean wall) |
+
+For the demo use high_1 / medium_1 / low_1 — those grade exactly as labeled.
 
 > Scanning a photo off a screen adds glare/moire — angle the phone slightly.
 > `old_v1/` holds the previous kit (curated for the v1 model — do not use with

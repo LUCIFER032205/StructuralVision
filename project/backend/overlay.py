@@ -19,18 +19,18 @@ _TEX_MAX = 1024
 _SEV_COLORS = {"HIGH": (255, 40, 40), "MEDIUM": (255, 160, 0), "LOW": (60, 200, 60)}
 
 
-def _severity(detections: list[dict], component_type: str, component_confidence: float) -> str:
+def _severity(detections: list[dict], component_type: str | None = None) -> str:
     # Scan-level risk over ALL detections — identical to the scan-result screen,
     # so the AR labels can never disagree with it. (Per-crack risk was wrong:
     # two cracks summing to MEDIUM each labeled LOW individually.)
-    return compute_risk(detections, component_type, component_confidence)
+    return compute_risk(detections, component_type)
 
 
 def build_overlay_glb(
     image_bytes: bytes,
     detections: list[dict],
-    component_type: str = "wall",
-    component_confidence: float = 1.0,
+    component_type: str | None = None,
+    risk_level: str | None = None,   # stored scan risk (measured wins over preliminary)
 ) -> bytes:
     img = Image.open(io.BytesIO(image_bytes))
     w, h = img.size
@@ -40,7 +40,7 @@ def build_overlay_glb(
     tex = Image.new("RGBA", (tw, th), (0, 0, 0, 0))
     draw = ImageDraw.Draw(tex)
     font = ImageFont.load_default(size=36)
-    sev = _severity(detections, component_type, component_confidence)
+    sev = risk_level or _severity(detections, component_type)
     rgb = _SEV_COLORS[sev]
     for i, d in enumerate(detections, 1):
         poly = [(p[0] * scale, p[1] * scale) for p in d["polygon"]]
@@ -92,7 +92,7 @@ if __name__ == "__main__":
     Image.new("RGB", (800, 600), (120, 120, 120)).save(buf, "JPEG")
     dets = [{"polygon": [[100, 100], [700, 120], [400, 500]],
              "area_ratio": 0.20, "confidence": 0.9}]
-    glb = build_overlay_glb(buf.getvalue(), dets, "column", 0.97)
+    glb = build_overlay_glb(buf.getvalue(), dets, "column")
     assert glb[:4] == b"glTF", "not a GLB"
 
     scene = trimesh.load(io.BytesIO(glb), file_type="glb")
@@ -103,13 +103,15 @@ if __name__ == "__main__":
     tex = geom.visual.material.baseColorTexture
     assert tex is not None and tex.mode == "RGBA"
     assert np.asarray(tex)[:, :, 3].max() > 0, "texture fully transparent"
-    assert _severity([dets[0]], "column", 0.97) == "HIGH"     # 0.20*1.5 = 0.30
+    assert _severity([dets[0]], "column") == "HIGH"           # 0.20*1.5 = 0.30
     # The field-report case: 5.83% area on a column must label LOW in AR,
     # matching the scan screen (0.0583*1.5 = 0.087 < 0.10).
-    assert _severity([{"area_ratio": 0.0583, "confidence": 0.97}], "column", 0.97) == "LOW"
-    assert _severity([{"area_ratio": 0.10, "confidence": 0.9}], "column", 0.97) == "MEDIUM"
+    assert _severity([{"area_ratio": 0.0583, "confidence": 0.97}], "column") == "LOW"
+    assert _severity([{"area_ratio": 0.10, "confidence": 0.9}], "column") == "MEDIUM"
     # Two cracks that only together cross the MEDIUM threshold must both
     # label MEDIUM — the scan-level risk, not per-crack.
     assert _severity([{"area_ratio": 0.04, "confidence": 0.9},
-                      {"area_ratio": 0.04, "confidence": 0.9}], "column", 0.97) == "MEDIUM"
+                      {"area_ratio": 0.04, "confidence": 0.9}], "column") == "MEDIUM"
+    # No component selected -> neutral weight (cf 1.0), not a guessed one.
+    assert _severity([{"area_ratio": 0.12, "confidence": 0.9}], None) == "MEDIUM"
     print(f"overlay self-check OK — {len(glb)} bytes, extents {ext}")

@@ -23,6 +23,23 @@ def _summary(risk: str, component: str, crack_count: int) -> str:
     return f"Minor cracking detected on {c}. Monitor and reinspect within 2–5 years."
 
 
+_STANDARD_REF = {
+    "JBDPA": "Graded per JBDPA damage guideline: Nakano, Maeda, Kuramoto & Murakami, 13WCEE 2004, Paper 124 (Tables 2-3).",
+    "BRE251": "Graded per BRE Digest 251, Assessment of damage in low-rise buildings (rev. 1995), masonry categories 0-5.",
+}
+
+
+def _assessment(scan: dict) -> str:
+    if scan.get("risk_source") != "measured":
+        return "Assessment: PRELIMINARY (image area only) - measure crack in AR for a standards-based grade."
+    s = (f"Assessment: MEASURED - width {scan['crack_width_mm']:.2f} mm, "
+         f"{scan.get('damage_standard') or 'n/a'} class {scan.get('damage_class') or '-'} "
+         f"({scan.get('damage_rating')})")
+    if scan.get("residual_capacity_pct") is not None:
+        s += f", residual capacity {scan['residual_capacity_pct']:.0f}%"
+    return s
+
+
 def _overlay(image_bytes: bytes, detections: list[dict]) -> Image.Image:
     img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
     draw = ImageDraw.Draw(img, "RGBA")
@@ -66,9 +83,8 @@ def build_pdf(scan: dict, image_bytes: bytes) -> bytes:
 
     c.setFillColorRGB(0, 0, 0)
     c.setFont("Helvetica", 12)
-    conf = scan.get("component_confidence") or 0
     c.drawString(8 * cm, y + 0.6 * cm,
-                 f"Component: {scan.get('component_type', '?')} ({conf * 100:.0f}%)")
+                 f"Component: {scan.get('component_type') or '?'}")
     c.drawString(8 * cm, y,
                  f"Cracks: {scan.get('crack_count', 0)}   "
                  f"Area: {(scan.get('crack_area_ratio') or 0) * 100:.2f}%")
@@ -77,6 +93,10 @@ def build_pdf(scan: dict, image_bytes: bytes) -> bytes:
     c.drawString(2 * cm, y - 1.6 * cm, _summary(risk, scan.get("component_type"), scan.get("crack_count", 0)))
     c.setFont("Helvetica", 11)
     c.drawString(2 * cm, y - 2.4 * cm, f"Maintenance window: {_MAINTENANCE.get(risk, '')}")
+    c.drawString(2 * cm, y - 3.2 * cm, _assessment(scan))
+    if scan.get("damage_standard"):
+        c.setFont("Helvetica", 8)
+        c.drawString(2 * cm, y - 3.8 * cm, _STANDARD_REF[scan["damage_standard"]])
 
     c.showPage()
     c.save()

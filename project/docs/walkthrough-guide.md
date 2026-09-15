@@ -54,7 +54,7 @@ The app needs to reach the backend. Two options:
 ### Option B — ngrok tunnel (remote demo / different network)
 
 ```bash
-F:/StructuralVision/ngrok.exe http 8000
+F:/StructuralVision/tools/ngrok.exe http 8000
 ```
 
 The URL is **always** `https://purr-decline-paycheck.ngrok-free.dev` (static free ngrok domain). Paste it into the **gear icon dialog** on the app's login screen once — it never changes.

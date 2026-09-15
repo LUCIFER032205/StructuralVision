@@ -13,7 +13,7 @@ set -a && . ./.env && set +a
 /c/Python314/python -m uvicorn main:app --host 0.0.0.0 --port 8000
 
 # 2. Start the tunnel (separate terminal)
-F:\StructuralVision\ngrok.exe http 8000
+F:\StructuralVision\tools\ngrok.exe http 8000
 ```
 
 The tunnel URL is **always** `https://purr-decline-paycheck.ngrok-free.dev`

@@ -41,5 +41,5 @@
 ## Reference
 - Guide feedback details: `project\docs\evening-todo.md`
 - Run backend: `cd project/backend && /c/Python314/python -m uvicorn main:app --host 0.0.0.0`
-- Tunnel: `F:\StructuralVision\ngrok.exe http 8000` → always `https://purr-decline-paycheck.ngrok-free.dev`
+- Tunnel: `F:\StructuralVision\tools\ngrok.exe http 8000` → always `https://purr-decline-paycheck.ngrok-free.dev`
 - APK share link: Supabase bucket `app-releases` (re-upload after rebuilds, arm64 split only)

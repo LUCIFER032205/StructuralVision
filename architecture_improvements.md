@@ -165,4 +165,4 @@ The documented failure is a **calibration failure**, not just accuracy. The mode
 | Model Format | ONNX (both models) |
 
 Backend runs at: `cd project/backend && python -m uvicorn main:app --host 0.0.0.0`
-Tunnel: `ngrok.exe http 8000`
+Tunnel: `tools\ngrok.exe http 8000`

@@ -16,7 +16,8 @@ datasets/
 *.tflite
 
 # ── Executables / tools ───────────────────────────────────────────────────────
-ngrok.exe
+# local binaries: ngrok.exe, jdk-17 (build JDK)
+tools/
 *.exe
 *.dll
 
@@ -63,5 +64,7 @@ build/
 .DS_Store
 Thumbs.db
 desktop.ini
-"project/backend/static/*.apk" 
-project/git_updated.md
+project/backend/static/*.apk
+kaggle_tomo/
+git_updated.md
+.vscode/

@@ -43,6 +43,31 @@ Scan each, write down: cracks found (y/n), risk shown, correct? (y/n)
 
 Save failures as screenshots + scan id. Anything wrong gets fixed tomorrow, before new features.
 
+## Tonight's test findings (2026-09-15, backend log + scans 91d83184 → 4e3e8cb0)
+- Non-cracks: 11/12 correct. 1 false alarm = overhead cable across a wall (44013866, conf 0.59) —
+  thin diagonal wire, the fill>0.6 edge filter would NOT catch it.
+- 2nd false-alarm type: tiny round blobs on a perforated dark cabinet panel (cba3bd4f, 3 dets 0.42-0.73)
+  → needs a minimum-elongation check (cracks are long/thin); edge filter won't catch it either.
+- Final tally 32 scans: non-cracks 17 correct / 2 false alarms; all crack photos found.
+  Passed: burst (8 shots → batch), gallery upload, PDF report, History, AR overlay. Crashed: wall mode.
+- Cracks: every crack photo found; real building crack found too (5c83b0fe). Misses thin hairline
+  branches next to a thick crack (scans 18-21, upper crack never outlined).
+- Preliminary risk depends on framing: same high_1 crack = LOW 1.9% / MEDIUM 2.8% / MEDIUM 3.0% by distance.
+- AR overlay + two-tap measure work (3 measurements, no errors).
+- **BUG: measurement gives absurd lengths → absurd widths/grades** (15: 18.8 mm, 22: hairline → 5.5 mm → HIGH).
+  Main cause (user report): in the default floor-plane mode a crack on a wall/screen has no plane, so the
+  two taps hit the desk/floor behind it. Plus the overlay is removed while measuring (ar_screen.dart
+  `_setOverlayHidden`), so the user has no guide. Measuring wall cracks needs wall-plane mode (crash test).
+  Fixes: hint "switch to wall mode to measure"; reject implausible lengths (e.g. > 2x crack extent);
+  keep a visible guide. Secondary: mask outline is several px thick, so hairline width is still
+  over-estimated even with correct taps (`width_from_measurement`, inference.py) — report "< resolution".
+
+- **Wall-plane mode (PlaneDetectionConfig.vertical) CRASHES the Vivo Y200** — confirmed tonight, same as
+  horizontalAndVertical. → AR measuring can't hit wall/column/beam cracks on this phone.
+  Plan: remove the wall toggle; add "Enter length with a ruler (cm)" on the result screen → same
+  /scan/{id}/measurement endpoint; keep AR Measure for floor/slab cracks only. (Check first: update
+  "Google Play Services for AR" and retry once; grab `adb logcat` over USB if it still crashes.)
+
 ## Tomorrow — one build with both pending changes
 - Straight-edge false-alarm filter (NOT applied yet): drop a detection whose mask fills > 0.6 of its
   min-area rotated rect (table/beam/TV edges fill it, wiggly cracks don't). Eval 2026-09-15:

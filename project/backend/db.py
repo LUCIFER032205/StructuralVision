@@ -50,8 +50,8 @@ def finish_scan(scan_id: str, result: dict, image_url: str | None = None):
     _conn().table("scans").update({
         "status": "done",
         "component_type": result["component_type"],
-        "component_confidence": result["component_confidence"],
         "risk_level": result["risk_level"],
+        "risk_source": result["risk_source"],
         "crack_count": result["crack_count"],
         "crack_area_ratio": result["crack_area_ratio"],
         "image_url": image_url,
@@ -71,6 +71,19 @@ def finish_scan(scan_id: str, result: dict, image_url: str | None = None):
     } for d in result["detections"]]
     if detections:
         _conn().table("crack_detections").insert(detections).execute()
+
+
+def set_measurement(scan_id: str, width_mm: float, graded: dict):
+    """graded = inference.measured_risk(...) output."""
+    _conn().table("scans").update({
+        "risk_level": graded["risk_level"],
+        "risk_source": "measured",
+        "crack_width_mm": width_mm,
+        "damage_standard": graded["standard"],
+        "damage_class": graded["damage_class"],
+        "damage_rating": graded["rating"],
+        "residual_capacity_pct": graded["residual_capacity_pct"],
+    }).eq("id", scan_id).execute()
 
 
 def fail_scan(scan_id: str, error: str):

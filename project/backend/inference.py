@@ -1,74 +1,44 @@
 """
-inference.py — the shared 2-model core for Structural Vision AR.
+inference.py — the crack-detection core for Structural Vision AR.
 
-Model 1: crack segmentation (YOLOv8-seg, ultralytics)  -> models/crack_seg.pt
-Model 2: component classifier (MobileNetV3-Small, ONNX) -> models/component.onnx
+Model 1: crack segmentation (YOLOv8-seg, ultralytics) -> models/crack_seg.pt
 
-Both models load by file path, so retraining = overwrite the file + restart.
+The model loads by file path, so retraining = overwrite the file + restart.
+
+Component type comes from the user, who picks it before capture (see the app's
+component-select sheet) and is taken as authoritative. A MobileNetV3 classifier
+("Model 2") used to guess it; removed 2026-09-08 — once the user states the
+component up front, a second guess at it has no job to do.
 
 Run standalone as the end-to-end sanity check:
-    python backend/inference.py            # runs on one val image per class
+    python backend/inference.py            # runs on the demo_kit images
 """
 from pathlib import Path
 import io
 import numpy as np
 from PIL import Image
-import onnxruntime as ort
 
 MODELS_DIR = Path(__file__).resolve().parent.parent / "models"
 CRACK_PT   = MODELS_DIR / "crack_seg.pt"
-COMPONENT_ONNX = MODELS_DIR / "component.onnx"
 
-# ImageFolder alphabetical order — baked into component.onnx at train time.
-COMPONENT_CLASSES = ["beam", "ceiling", "column", "slab", "wall"]
-
-IMAGENET_MEAN = np.array([0.485, 0.456, 0.406], dtype=np.float32)
-IMAGENET_STD  = np.array([0.229, 0.224, 0.225], dtype=np.float32)
+# The component types the app offers; the user's pick is authoritative.
+COMPONENT_TYPES = ["beam", "ceiling", "column", "rc_wall", "slab", "wall"]  # wall = brick/masonry
 
 _yolo = None
-_ort_sess = None
 
 
 def load_models():
-    """Lazy-load both models once; reused across scans."""
-    global _yolo, _ort_sess
+    """Lazy-load the crack model once; reused across scans."""
+    global _yolo
     if _yolo is None:
         from ultralytics import YOLO  # heavy import, defer until needed
         _yolo = YOLO(str(CRACK_PT))
-    if _ort_sess is None:
-        _ort_sess = ort.InferenceSession(str(COMPONENT_ONNX))
-    return _yolo, _ort_sess
-
-
-def _preprocess_classifier(img: Image.Image) -> np.ndarray:
-    """Resize(256) -> CenterCrop(224) -> ToTensor -> ImageNet norm. Must match training val_tf."""
-    img = img.convert("RGB")
-    w, h = img.size
-    scale = 256 / min(w, h)
-    img = img.resize((round(w * scale), round(h * scale)), Image.BILINEAR)
-    w, h = img.size
-    left, top = (w - 224) // 2, (h - 224) // 2
-    img = img.crop((left, top, left + 224, top + 224))
-    x = np.asarray(img, dtype=np.float32) / 255.0        # HWC, [0,1]
-    x = (x - IMAGENET_MEAN) / IMAGENET_STD
-    x = x.transpose(2, 0, 1)[None]                        # 1,C,H,W
-    return np.ascontiguousarray(x, dtype=np.float32)
-
-
-def classify_component(img: Image.Image):
-    """-> (component_type, confidence)."""
-    _, sess = load_models()
-    x = _preprocess_classifier(img)
-    logits = sess.run(None, {sess.get_inputs()[0].name: x})[0][0]
-    e = np.exp(logits - logits.max())
-    probs = e / e.sum()
-    idx = int(probs.argmax())
-    return COMPONENT_CLASSES[idx], float(probs[idx])
+    return _yolo
 
 
 def detect_cracks(img: Image.Image):
     """-> list of {bbox[x1,y1,x2,y2], polygon[[x,y]...], confidence, area_ratio}."""
-    yolo, _ = load_models()
+    yolo = load_models()
     img_area = float(img.width * img.height)
     # conf 0.4: v4 model scores 99.0% image accuracy (199/200 cracks, 3/200 false alarms on SDNET2018);
     # v2 needed 0.5 because 0.25 flagged bag seams / curtain edges as cracks
@@ -175,21 +145,23 @@ def _polygon_area(pts: np.ndarray) -> float:
 
 # --- Risk model, two tiers ---------------------------------------------------
 #
-# Tier 1 (scan time, no physical scale): IN-HOUSE HEURISTIC, not from a
-# standard. DI = crack_area_ratio x CF x SF. CF weights load-bearing members
-# higher (ordering inspired by JBDPA member classification: vertical
-# load-bearing > horizontal > non-structural finishes); the numeric values and
-# the 0.10/0.25 thresholds are empirical picks on our own scan history.
-# ponytail: no citable standard maps pixel area ratio to risk — physical crack
-# width is what the standards use; tier 2 supersedes this once width is known.
-_CF = {"column": 1.5, "beam": 1.3, "slab": 1.0, "wall": 0.8, "ceiling": 0.2}
+# Tier 1 (scan time, no physical scale) -> risk_source "preliminary".
+# IN-HOUSE HEURISTIC, not from a standard. DI = crack_area_ratio x CF x SF. CF
+# weights load-bearing members higher (JBDPA ordering: vertical load-bearing >
+# horizontal > non-structural finishes); the numeric values and the 0.10/0.25
+# thresholds are empirical picks on our own scan history.
+# ponytail: no published standard maps pixel area ratio to risk — every one
+# grades physical crack width. Tier 2 supersedes this once width is measured.
+_CF = {"column": 1.5, "rc_wall": 1.5, "beam": 1.3, "slab": 1.0, "wall": 0.8, "ceiling": 0.2}
 _SF = {"structural": 1.0, "paint": 0.2}
 
 
-def compute_risk(detections, component_type: str = "wall", component_confidence: float = 1.0) -> str:
+def compute_risk(detections, component_type: str | None = None) -> str:
     if not detections:
         return "LOW"
-    cf = _CF.get(component_type, 1.0) if component_confidence >= 0.6 else 1.0
+    # Unknown component (older client that sent no selection) gets a neutral
+    # weight rather than a guessed one.
+    cf = _CF.get(component_type, 1.0)
     di = sum(d["area_ratio"] * cf * _SF.get(d.get("crack_type", "structural"), 1.0)
              for d in detections)
     if di >= 0.25:
@@ -199,58 +171,104 @@ def compute_risk(detections, component_type: str = "wall", component_confidence:
     return "LOW"
 
 
-# Tier 2 (after AR two-tap measure gives physical scale): JBDPA damage class
-# from max residual crack width, per "Standard for Post-earthquake Damage
-# Level Classification" (JBDPA 2001, rev. 2015). English refs: Nakano, Maeda,
-# Kuramoto & Murakami, 13WCEE paper No.124; Maeda, Nakano & Lee, 13WCEE
-# paper No.1179. Class bands (RC members, max residual crack width):
-#   I  < 0.2 mm   II  0.2-1.0 mm   III  1.0-2.0 mm   IV  > 2.0 mm
-# Class V (rebar buckling / core crushing) is not detectable from imagery, so
-# widths beyond class IV still report IV. For context, Eurocode 2 (EN 1992-1-1
-# Table 7.1N) and ACI 224R-01 put the RC serviceability limit at ~0.3 mm,
-# inside class II.
-def jbdpa_damage_class(width_mm: float) -> int:
-    if width_mm < 0.2:
-        return 1
-    if width_mm <= 1.0:
-        return 2
-    if width_mm <= 2.0:
-        return 3
-    return 4
+# Tier 2 (after the AR two-tap measurement gives physical scale) -> "measured".
+#
+# RC members (column, beam, slab, rc_wall) — JBDPA post-earthquake damage
+# guideline, as published in: Nakano, Maeda, Kuramoto & Murakami, "Guideline
+# for Post-Earthquake Damage Evaluation and Rehabilitation of RC Buildings in
+# Japan", 13WCEE, Vancouver, 2004, Paper No. 124.
+#   Table 2: max residual crack width -> damage class
+#            I < 0.2 mm, II 0.2-1.0, III 1.0-2.0, IV > 2.0 (V = rebar buckling,
+#            not visible in a photo, so wide cracks cap at IV).
+#   Table 3: seismic capacity reduction factor eta per class and member type.
+#   Eq. 2-3: residual seismic capacity ratio R = residual / original x 100 %;
+#            for a single inspected member R = 100 * eta.
+#   Rating:  Slight R>=95, Light 80<=R<95, Moderate 60<=R<80, Heavy R<60
+#            (calibrated on 145 school buildings after the 1995 Kobe quake).
+# Masonry/brick walls ("wall") — BRE Digest 251 (1990, rev. 1995), damage
+# categories by crack width: 0 <0.1, 1 <=1, 2 <=5, 3 5-15, 4 15-25, 5 >25 mm;
+# 0-2 aesthetic, 3-4 serviceability, 5 stability.
+_ETA = {  # Table 3, classes I..IV
+    "brittle_column": (0.95, 0.60, 0.30, 0.0),
+    "ductile_column": (0.95, 0.75, 0.50, 0.10),
+    "wall":           (0.95, 0.60, 0.30, 0.0),
+}
+# ponytail: member detailing is unknown from a photo. Columns take the brittle
+# (conservative) column; beams/slabs are flexure-dominated so take the ductile
+# column; the guideline itself grades beams via their effect on columns.
+_MEMBER_ETA = {"column": "brittle_column", "beam": "ductile_column",
+               "slab": "ductile_column", "rc_wall": "wall"}
+_RATING_RISK = {"Slight": "LOW", "Light": "LOW", "Moderate": "MEDIUM", "Heavy": "HIGH"}
 
 
-def risk_from_width(width_mm: float, crack_type: str = "structural") -> str:
-    """Width-based risk per JBDPA class: I->LOW, II->MEDIUM, III/IV->HIGH.
-    Paint/surface cracks are cosmetic regardless of width."""
-    if crack_type == "paint":
-        return "LOW"
-    return {1: "LOW", 2: "MEDIUM", 3: "HIGH", 4: "HIGH"}[jbdpa_damage_class(width_mm)]
+def _jbdpa_class(width_mm: float) -> int:
+    """Table 2 -> 0..3 for classes I..IV."""
+    return 0 if width_mm < 0.2 else 1 if width_mm <= 1.0 else 2 if width_mm <= 2.0 else 3
 
 
-def run_scan(image_bytes: bytes) -> dict:
-    """Full pipeline: bytes -> component + cracks + risk."""
+def _bre251_category(w: float) -> int:
+    return 0 if w < 0.1 else 1 if w <= 1.0 else 2 if w <= 5.0 else 3 if w <= 15.0 else 4 if w <= 25.0 else 5
+
+
+def measured_risk(width_mm: float, component_type: str | None,
+                  crack_type: str = "structural") -> dict:
+    """Crack width (mm) -> published damage grade -> LOW/MEDIUM/HIGH."""
+    if component_type == "ceiling" or crack_type == "paint":
+        # Out of both standards' scope: finishes, not structural members.
+        return {"standard": None, "damage_class": None, "residual_capacity_pct": None,
+                "rating": "Cosmetic", "risk_level": "LOW"}
+    if component_type == "wall":
+        cat = _bre251_category(width_mm)
+        rating = "Aesthetic" if cat <= 2 else "Serviceability" if cat <= 4 else "Stability"
+        return {"standard": "BRE251", "damage_class": str(cat), "residual_capacity_pct": None,
+                "rating": rating,
+                "risk_level": {"Aesthetic": "LOW", "Serviceability": "MEDIUM", "Stability": "HIGH"}[rating]}
+    # Unknown component (older client) is graded as the conservative RC column.
+    k = _jbdpa_class(width_mm)
+    r = round(100 * _ETA[_MEMBER_ETA.get(component_type, "brittle_column")][k], 1)
+    rating = "Slight" if r >= 95 else "Light" if r >= 80 else "Moderate" if r >= 60 else "Heavy"
+    return {"standard": "JBDPA", "damage_class": ("I", "II", "III", "IV")[k],
+            "residual_capacity_pct": r, "rating": rating, "risk_level": _RATING_RISK[rating]}
+
+
+def width_from_measurement(length_cm: float, detections: list[dict]):
+    """AR two-tap gives the real length of the largest crack; its px width/length
+    ratio converts that to a width in mm. -> (width_mm, crack_type) or (None, None)."""
+    if not detections:
+        return None, None
+    d = max(detections, key=lambda d: d.get("area_ratio") or 0)
+    if not d.get("length_px") or not d.get("width_px"):
+        return None, None
+    return length_cm * 10 * d["width_px"] / d["length_px"], d.get("crack_type") or "structural"
+
+
+def run_scan(image_bytes: bytes, component_type: str | None = None) -> dict:
+    """Full pipeline: bytes -> cracks + risk, for the user-selected component.
+
+    component_type comes from the app's pre-capture selection and is taken as
+    given. None means the client sent no selection (an older build): the scan
+    still runs, and risk falls back to a neutral component weight.
+    """
     img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
-    component, comp_conf = classify_component(img)
     detections = detect_cracks(img)
     return {
-        "component_type": component,
-        "component_confidence": comp_conf,
-        "crack_count": len(detections),
+        "component_type":   component_type,
+        "crack_count":      len(detections),
         "crack_area_ratio": sum(d["area_ratio"] for d in detections),
-        "risk_level": compute_risk(detections, component, comp_conf),
-        "detections": detections,
+        "risk_level":       compute_risk(detections, component_type),
+        "risk_source":      "preliminary",   # becomes "measured" after AR measurement
+        "detections":       detections,
     }
 
 
 if __name__ == "__main__":
-    # Sanity check: one real val image per class, end to end.
-    val = Path(r"F:\StructuralVision\datasets\prepared\model2_classifier\val")
-    for cls in COMPONENT_CLASSES:
-        f = next((val / cls).iterdir())
-        result = run_scan(f.read_bytes())
-        print(f"[{cls:8s}] pred={result['component_type']:8s} "
-              f"({result['component_confidence']:.2f})  "
+    # Sanity check: the curated demo kit, end to end.
+    # ponytail: the risk levels in demo_kit/README.md predate the current DI
+    # risk formula, so this is a smoke test, not a regression assertion.
+    kit = Path(__file__).resolve().parent.parent / "demo_kit"
+    for f in sorted(kit.glob("*.jpg")):
+        result = run_scan(f.read_bytes(), "wall")
+        print(f"[{f.name:12s}] risk={result['risk_level']:6s}  "
               f"cracks={result['crack_count']:2d}  "
-              f"ratio={result['crack_area_ratio']:.4f}  "
-              f"risk={result['risk_level']}")
-    print("\nSanity check complete.")
+              f"ratio={result['crack_area_ratio']:.4f}")
+    print("Sanity check complete.")

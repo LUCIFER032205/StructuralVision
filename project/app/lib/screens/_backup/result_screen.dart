@@ -76,8 +76,7 @@ class ResultScreen extends StatelessWidget {
                     ),
                     const SizedBox(width: 12),
                     Text(
-                      '${result.componentType ?? '?'} '
-                      '(${((result.componentConfidence ?? 0) * 100).toStringAsFixed(0)}%)',
+                      result.componentType ?? '?',
                       style: Theme.of(context).textTheme.titleMedium,
                     ),
                   ],

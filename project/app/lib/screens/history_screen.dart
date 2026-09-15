@@ -4,6 +4,7 @@ import 'package:http/http.dart' as http;
 import '../models.dart';
 import '../scan_api.dart';
 import '../theme.dart';
+import 'component_select_sheet.dart';
 import 'result_screen.dart';
 
 class HistoryScreen extends StatefulWidget {
@@ -173,7 +174,9 @@ class _HistoryScreenState extends State<HistoryScreen> {
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           Text(
-                            s.componentType ?? s.status,
+                            s.componentType != null
+                                ? ComponentSelectSheet.labelFor(s.componentType)
+                                : s.status,
                             style: AppTextStyles.titleSm
                                 .copyWith(color: AppColors.textPrimary),
                           ),
@@ -195,7 +198,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
                               ],
                               Text(_formatDate(s.createdAt),
                                   style: AppTextStyles.mono
-                                      .copyWith(fontSize: 11)),
+                                      .copyWith(fontSize: 12)),
                             ],
                           ),
                         ],

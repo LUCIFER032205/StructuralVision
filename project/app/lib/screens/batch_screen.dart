@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../models.dart';
 import '../scan_api.dart';
 import '../theme.dart';
+import 'component_select_sheet.dart';
 import 'result_screen.dart';
 
 class BatchScreen extends StatefulWidget {
@@ -224,7 +225,7 @@ class _SegmentCard extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  'Segment ${index + 1}  ·  ${r.componentType ?? '?'}',
+                  'Segment ${index + 1}  ·  ${ComponentSelectSheet.labelFor(r.componentType)}',
                   style: AppTextStyles.titleSm
                       .copyWith(color: AppColors.textPrimary),
                 ),

@@ -38,9 +38,15 @@ class CrackDetection {
 class ScanResult {
   final String id;
   final String status; // pending | done | error
-  final String? componentType;
-  final double? componentConfidence;
+  final String? componentType; // what the user picked before capture
   final String? riskLevel; // LOW | MEDIUM | HIGH
+  // preliminary = pixel-area heuristic; measured = AR width graded by standard
+  final String riskSource;
+  final double? crackWidthMm;
+  final String? damageStandard; // JBDPA | BRE251
+  final String? damageClass; // JBDPA I-IV or BRE 251 category 0-5
+  final String? damageRating; // e.g. Moderate, Serviceability
+  final double? residualCapacityPct; // JBDPA only
   final int? crackCount;
   final double? crackAreaRatio;
   final String? error;
@@ -52,8 +58,13 @@ class ScanResult {
     required this.id,
     required this.status,
     this.componentType,
-    this.componentConfidence,
     this.riskLevel,
+    this.riskSource = 'preliminary',
+    this.crackWidthMm,
+    this.damageStandard,
+    this.damageClass,
+    this.damageRating,
+    this.residualCapacityPct,
     this.crackCount,
     this.crackAreaRatio,
     this.error,
@@ -62,20 +73,37 @@ class ScanResult {
     this.detections = const [],
   });
 
-  bool get isDone => status == 'done';
+  bool get isDone  => status == 'done';
   bool get isError => status == 'error';
+  bool get isMeasured => riskSource == 'measured';
+
+  /// "JBDPA class II · Moderate · 60% capacity" — null until measured.
+  String? get gradeSummary => !isMeasured
+      ? null
+      : [
+          if (damageStandard != null)
+            '${damageStandard == 'BRE251' ? 'BRE 251 cat.' : 'JBDPA class'} $damageClass',
+          if (damageRating != null) damageRating!,
+          if (residualCapacityPct != null)
+            '${residualCapacityPct!.toStringAsFixed(0)}% capacity',
+        ].join(' · ');
 
   factory ScanResult.fromJson(Map<String, dynamic> j) => ScanResult(
         id: j['id'] as String,
         status: j['status'] as String,
         componentType: j['component_type'] as String?,
-        componentConfidence: (j['component_confidence'] as num?)?.toDouble(),
-        riskLevel: j['risk_level'] as String?,
-        crackCount: j['crack_count'] as int?,
-        crackAreaRatio: (j['crack_area_ratio'] as num?)?.toDouble(),
-        error: j['error'] as String?,
-        imageUrl: j['image_url'] as String?,
-        createdAt: j['created_at'] != null
+        riskLevel:     j['risk_level'] as String?,
+        riskSource:    j['risk_source'] as String? ?? 'preliminary',
+        crackWidthMm:  (j['crack_width_mm'] as num?)?.toDouble(),
+        damageStandard: j['damage_standard'] as String?,
+        damageClass:   j['damage_class'] as String?,
+        damageRating:  j['damage_rating'] as String?,
+        residualCapacityPct: (j['residual_capacity_pct'] as num?)?.toDouble(),
+        crackCount:    j['crack_count'] as int?,
+        crackAreaRatio:(j['crack_area_ratio'] as num?)?.toDouble(),
+        error:         j['error'] as String?,
+        imageUrl:      j['image_url'] as String?,
+        createdAt:     j['created_at'] != null
             ? DateTime.tryParse(j['created_at'] as String)
             : null,
         detections: (j['detections'] as List? ?? [])

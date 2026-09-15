@@ -19,7 +19,8 @@ class AppColors {
   // Text
   static const textPrimary   = Color(0xFFE6EDF3);
   static const textSecondary = Color(0xFF8B949E);
-  static const textMuted     = Color(0xFF484F58);
+  // ≥4.5:1 (WCAG AA) on bg, surface and surface2 — was #484F58 at 2.28:1.
+  static const textMuted     = Color(0xFF868E98);
 
   // Accent
   static const accent     = Color(0xFFFBBF24); // amber-400
@@ -50,8 +51,8 @@ class AppTextStyles {
   static final titleMd   = _base.copyWith(fontSize: 16, fontWeight: FontWeight.w600, height: 1.4);
   static final titleSm   = _base.copyWith(fontSize: 14, fontWeight: FontWeight.w600, height: 1.4, color: AppColors.textSecondary);
   static final bodyMd    = _base.copyWith(fontSize: 14, fontWeight: FontWeight.w400, height: 1.5);
-  static final bodySm    = _base.copyWith(fontSize: 12, fontWeight: FontWeight.w400, height: 1.5, color: AppColors.textSecondary);
-  static final label     = _base.copyWith(fontSize: 11, fontWeight: FontWeight.w500, letterSpacing: 0.8, color: AppColors.textMuted);
+  static final bodySm    = _base.copyWith(fontSize: 13, fontWeight: FontWeight.w400, height: 1.5, color: AppColors.textSecondary);
+  static final label     = _base.copyWith(fontSize: 12, fontWeight: FontWeight.w500, letterSpacing: 0.8, color: AppColors.textMuted);
   static final mono      = _base.copyWith(fontSize: 13, fontFamily: 'RobotoMono', color: AppColors.textSecondary);
 }
 

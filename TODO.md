@@ -1,45 +1,49 @@
-# Structural Vision AR — TODO (written 2026-07-27, evening)
+# Structural Vision AR — TODO (updated 2026-09-15)
 
-## Done today
-- Consolidated everything into `F:\StructuralVision\` (project + datasets), all paths fixed, backend self-check passes.
-- **#1 AR load UX**: feature points shown immediately + "sweep slowly" spinner hint until first plane detected (`ar_screen.dart`). Release APK rebuilt, copied to backend/static AND uploaded to Supabase share link.
+Plan to finish: `project/docs/finish_plan.md` (target 2026-09-30).
 
-## Tomorrow — in order
+## Done 2026-09-15
+- All app + backend work committed; `.gitignore` fixed (apk rule was quoted and never matched; `kaggle_tomo/` now ignored).
+- App: confidence floor 0.5 → 0.4 in the result-screen outline shading (matches backend conf 0.4).
+- Backend: duplicate crack masks merged (NMS iou 0.45). v4 was drawing 2 masks on one crack, doubling area and risk.
+- Risk thresholds re-fit 0.10/0.25 → 0.03/0.07 on demo_kit (see `project/demo_kit/README.md`).
+- Rescan of all 63 stored app scans with v4: all 8 v2 false alarms (curtains, bag, laptop) are now clean;
+  6 remaining false alarms are straight architectural edges (table edge, beam edges, projector, TV).
 
-### 1. Device-test the new AR onboarding (Vivo Y200) — 15 min
-- Install new APK (tunnel link or adb), scan → AR.
-- Expect: dots immediately, spinner + sweep hint, then tap-to-place prompt.
-- Also still untested from 7/21 build: vertical-plane toggle (may SIGSEGV — horizontalAndVertical did), two-tap measure, severity labels in overlay.
+## Tonight — one round of device testing (Vivo Y200)
 
-### 2. Auto-place stopgap: crosshair UX — ~30 min
-- Plugin has NO programmatic hit-test → true auto-place blocked without forking.
-- Stopgap: on first plane detected, pulsing crosshair at screen center + "tap here" hint. ~20 lines in `ar_screen.dart`.
+Setup: VS Code task `1. Check setup` → `2. Start backend` → (other network) `3. ngrok tunnel`.
+Rebuild the APK first (`APK: build release`); the committed app change is not in the current APK.
 
-### 3. Paint crack vs structural crack (guide's idea — it's legit, not BS)
-- Cheapest first: **heuristic on existing masks** — width / length / straightness / branching from crack polygons. Craze web = cosmetic, long wide directional = structural. Flag on result screen. No retraining, no new data.
-- Later: physical width from AR measure as extra signal (<1mm → cosmetic-leaning).
-- Much later: trained classifier on crack crops (needs labeling few hundred crops).
+### A. Detection on real surfaces — the numbers for the paper
+Scan each, write down: cracks found (y/n), risk shown, correct? (y/n)
+- [ ] 10 real cracks (walls, columns, beams, ceiling) — pick component correctly each time
+- [ ] 10 NON-cracks that look like cracks: table edge, beam/ceiling edge, wall corner, door frame,
+      tile grout, cable on wall, curtain fold, bag seam, projector/TV edge, shadow line
+- [ ] Same real crack scanned as column vs wall vs ceiling → risk should drop column > wall > ceiling
+- [ ] demo_kit high_1 / medium_1 / low_1 off a screen as column → HIGH / MEDIUM / LOW
 
-### 4. Video scan mode (#2 from evening-todo)
-- Client-side lazy version: record ~10s → sample 5-8 frames → fire existing `/scan` per frame → merge detections (IoU dedupe). No new backend endpoint.
+### B. App flow
+- [ ] Component sheet → capture → result in 1 tap after picking component
+- [ ] Tap a crack → "NN% confident"; weak crack draws thinner/fainter
+- [ ] Pinch-zoom on the result photo
+- [ ] Clean wall → "No cracks detected" empty state
+- [ ] History + batch screens open, old scans load
 
-### 5. Plugin fork (unlocks real auto-place + #3 drip mapping)
-- Copy `ar_flutter_plugin_2` → `app/plugins/`, local path dep in pubspec.
-- Add Kotlin method channel: `hitTestFromScreen(x,y)` → `frame.hitTest()` → pose.
-- Then: auto-place overlay on first plane; later ray-cast for gap→drip-spot mapping.
-- Risk: native code on the SIGSEGV-prone Vivo — test incrementally.
+### C. AR (still untested since the 7/21 build)
+- [ ] Dots appear immediately + "sweep slowly" hint, then tap-to-place
+- [ ] Overlay label risk == result screen risk
+- [ ] Two-tap measure → risk switches to "measured" grade (JBDPA/BRE251)
+- [ ] Vertical-plane toggle (may SIGSEGV — note it if so)
 
-### 6. Gap → drip-spot mapping (the guide's "wow" feature)
-- Needs: #4 (video helps catch gaps) + #5 (ray-cast down from gap to floor plane).
-- Also needs gap/seam training data eventually.
+Save failures as screenshots + scan id. Anything wrong gets fixed tomorrow, before new features.
 
-## Background / parallel
-- Model 1 retrain toward mAP50 0.90 (GPU task, data-bound — more labeled data / TTA / harder negatives from scan history).
-- Duplicate-mask dedup in `inference.py` (2 detections of same crack inflate area ratio — scan 0310b12e case).
-- Wall-scan OOD misclassification (cluttered wall → "ceiling @0.98") — scan guides first, then maybe user-override on class.
+## After testing (only if tonight is clean)
+- Paper + `model_evolution_report.md`: v2 → v3 rejected → v4, image-level accuracy, NaN investigation,
+  dataset 9,816 images, duplicate-mask + real-photo false-alarm findings.
+- Video scan mode, plugin fork / auto-place, gap → drip mapping: cut unless the paper is done early.
 
 ## Reference
-- Guide feedback details: `project\docs\evening-todo.md`
 - Run backend: `cd project/backend && /c/Python314/python -m uvicorn main:app --host 0.0.0.0`
-- Tunnel: `F:\StructuralVision\tools\ngrok.exe http 8000` → always `https://purr-decline-paycheck.ngrok-free.dev`
+- Tunnel: `F:\StructuralVision\tools\ngrok.exe http 8000` → `https://purr-decline-paycheck.ngrok-free.dev`
 - APK share link: Supabase bucket `app-releases` (re-upload after rebuilds, arm64 split only)

@@ -177,8 +177,8 @@ Ask Claude Code to generate the full merge + conversion script once all datasets
 
 ## Open Items
 
-- [ ] Download datasets #1–5 from list above
-- [ ] Write dataset merge + conversion script (ask Claude Code after download)
-- [ ] Run label audit on existing crack.yolov8 data
-- [ ] Kick off v3 training on Kaggle
-- [ ] Re-tune risk score thresholds after v3 (report noted v2 skews toward MEDIUM)
+- [x] Download datasets #1–5 from list above
+- [x] Write dataset merge + conversion script (`fix_local_dataset.py`, `fix_problem_images.py`) → 9,816 train images
+- [x] Run label audit on existing crack.yolov8 data (`find_problem_images.py`)
+- [x] Kick off v3 training on Kaggle: v3 (YOLOv8l-seg) rejected at 0.618 mask mAP50 / 4.3 s CPU; v4 (YOLOv8m-seg fine-tune) deployed 2026-09-13 at 99.0% image-level accuracy
+- [x] Re-tune risk score thresholds (2026-09-15): duplicate masks deduped (NMS iou 0.45), preliminary DI thresholds 0.10/0.25 → 0.03/0.07, fit on demo_kit

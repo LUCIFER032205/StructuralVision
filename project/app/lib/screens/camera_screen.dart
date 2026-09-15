@@ -1,14 +1,16 @@
 import 'dart:async';
 
 import 'package:camera/camera.dart';
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../scan_api.dart';
 import '../theme.dart';
 import 'batch_screen.dart';
+import 'component_select_sheet.dart';
 import 'history_screen.dart';
 import 'result_screen.dart';
 
@@ -29,12 +31,32 @@ class _CameraScreenState extends State<CameraScreen> {
   String? _initError;
   Timer?  _burstTimer;
   List<Uint8List>? _burstShots;
+  String? _burstComponent; // component pre-selected before burst starts
+  // Remembered across scans and app restarts; the viewfinder chip changes it.
+  // Asked for only when unset, instead of a modal before every capture.
+  String? _component;
+  static const _kComponent = 'last_component';
 
   @override
   void initState() {
     super.initState();
     _init();
+    SharedPreferences.getInstance().then((p) {
+      if (mounted) setState(() => _component = p.getString(_kComponent));
+    });
   }
+
+  Future<String?> _pickComponent() async {
+    final picked = await ComponentSelectSheet.show(context);
+    if (picked != null && mounted) {
+      setState(() => _component = picked);
+      (await SharedPreferences.getInstance()).setString(_kComponent, picked);
+    }
+    return picked;
+  }
+
+  Future<String?> _ensureComponent() async =>
+      _component ?? await _pickComponent();
 
   Future<void> _init() async {
     setState(() => _initError = null);
@@ -44,7 +66,9 @@ class _CameraScreenState extends State<CameraScreen> {
       final back = cams.firstWhere(
           (c) => c.lensDirection == CameraLensDirection.back,
           orElse: () => cams.first);
-      _controller = CameraController(back, ResolutionPreset.medium,
+      // high (~1080p): the model infers at 1024px, medium (~720p) upscaled
+      // and could lose hairline cracks before inference.
+      _controller = CameraController(back, ResolutionPreset.high,
           enableAudio: false);
       await _controller!.initialize();
     } catch (e) {
@@ -56,11 +80,18 @@ class _CameraScreenState extends State<CameraScreen> {
   Future<void> _scan() async {
     final ctrl = _controller;
     if (ctrl == null || !ctrl.value.isInitialized ||
-        _status != null || _burstShots != null) return;
+        _status != null || _burstShots != null) {
+      return;
+    }
+
+    final component = await _ensureComponent();
+    if (component == null || !mounted) return; // user dismissed
+
     try {
+      HapticFeedback.mediumImpact(); // gloved hands: confirm the shutter fired
       setState(() => _status = 'Capturing…');
       final shot = await ctrl.takePicture();
-      await _analyze(await shot.readAsBytes());
+      await _analyze(await shot.readAsBytes(), componentType: component);
     } catch (e) {
       _showError(e);
     } finally {
@@ -72,15 +103,22 @@ class _CameraScreenState extends State<CameraScreen> {
     if (_status != null || _burstShots != null) return;
     try {
       final picked = await ImagePicker().pickMultiImage();
-      if (picked.isEmpty) return;
+      if (picked.isEmpty || !mounted) return;
+
+      // Current component applies to all picked images
+      final component = await _ensureComponent();
+      if (component == null || !mounted) return;
+
       if (picked.length == 1) {
-        await _analyze(await picked.first.readAsBytes());
+        await _analyze(await picked.first.readAsBytes(),
+            componentType: component);
         return;
       }
       setState(() => _status = 'Uploading ${picked.length} images…');
       final ids = <String>[];
       for (final p in picked) {
-        ids.add(await scanApi.submitScan(await p.readAsBytes()));
+        ids.add(await scanApi.submitScan(await p.readAsBytes(),
+            componentType: component));
       }
       await _openBatch(ids);
     } catch (e) {
@@ -94,7 +132,16 @@ class _CameraScreenState extends State<CameraScreen> {
     if (_burstShots != null) return _stopBurst();
     final ctrl = _controller;
     if (ctrl == null || !ctrl.value.isInitialized || _status != null) return;
-    setState(() => _burstShots = []);
+
+    // All burst frames inherit the current component
+    final component = await _ensureComponent();
+    if (component == null || !mounted) return;
+    HapticFeedback.mediumImpact();
+
+    setState(() {
+      _burstShots     = [];
+      _burstComponent = component;
+    });
     _burstTimer = Timer(_burstStartDelay, () {
       _takeBurstShot();
       _burstTimer = Timer.periodic(_burstInterval, (_) => _takeBurstShot());
@@ -117,14 +164,15 @@ class _CameraScreenState extends State<CameraScreen> {
   }
 
   Future<void> _stopBurst() async {
-    final shots = _burstShots;
+    final shots     = _burstShots;
+    final component = _burstComponent;
     _cancelBurst();
     if (shots == null || shots.isEmpty) return;
     try {
       setState(() => _status = 'Uploading ${shots.length} images…');
       final ids = <String>[];
       for (final s in shots) {
-        ids.add(await scanApi.submitScan(s));
+        ids.add(await scanApi.submitScan(s, componentType: component));
       }
       await _openBatch(ids);
     } catch (e) {
@@ -136,8 +184,9 @@ class _CameraScreenState extends State<CameraScreen> {
 
   void _cancelBurst() {
     _burstTimer?.cancel();
-    _burstTimer  = null;
-    _burstShots  = null;
+    _burstTimer     = null;
+    _burstShots     = null;
+    _burstComponent = null;
     if (mounted) setState(() {});
   }
 
@@ -152,9 +201,9 @@ class _CameraScreenState extends State<CameraScreen> {
     if (mounted) _init();
   }
 
-  Future<void> _analyze(Uint8List bytes) async {
+  Future<void> _analyze(Uint8List bytes, {required String componentType}) async {
     setState(() => _status = 'Uploading…');
-    final scanId = await scanApi.submitScan(bytes);
+    final scanId = await scanApi.submitScan(bytes, componentType: componentType);
     setState(() => _status = 'Analyzing…');
     final result = await scanApi.waitForResult(scanId);
     if (!mounted) return;
@@ -230,6 +279,22 @@ class _CameraScreenState extends State<CameraScreen> {
                     // ── Viewfinder overlay ────────────────────────────────
                     if (_status == null && !isRecording)
                       const _ViewfinderGuide(),
+
+                    // ── Component chip (what's being scanned) ─────────────
+                    if (_status == null && !isRecording)
+                      Positioned(
+                        top: MediaQuery.of(context).padding.top + 64,
+                        left: 0,
+                        right: 0,
+                        child: Center(
+                          child: _ComponentChip(
+                            label: _component == null
+                                ? 'Choose component'
+                                : ComponentSelectSheet.labelFor(_component),
+                            onTap: _pickComponent,
+                          ),
+                        ),
+                      ),
 
                     // ── REC badge ─────────────────────────────────────────
                     if (isRecording)
@@ -475,15 +540,65 @@ class _ControlBar extends StatelessWidget {
   }
 }
 
+class _ComponentChip extends StatelessWidget {
+  final String label;
+  final VoidCallback onTap;
+  const _ComponentChip({required this.label, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    return Semantics(
+      button: true,
+      label: 'Component: $label. Tap to change',
+      excludeSemantics: true,
+      child: Material(
+        color: Colors.black.withValues(alpha: 0.6),
+        shape: StadiumBorder(
+            side: BorderSide(color: AppColors.accent.withValues(alpha: 0.6))),
+        child: InkWell(
+          customBorder: const StadiumBorder(),
+          onTap: onTap,
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(minHeight: 48),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 18),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(label,
+                      style: AppTextStyles.titleSm
+                          .copyWith(color: Colors.white)),
+                  const SizedBox(width: 4),
+                  const Icon(Icons.arrow_drop_down_rounded,
+                      color: AppColors.accent),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 class _ShutterButton extends StatelessWidget {
   final VoidCallback? onTap;
   const _ShutterButton({required this.onTap});
 
   @override
   Widget build(BuildContext context) {
-    return GestureDetector(
-      onTap: onTap,
-      child: Container(
+    return Semantics(
+      button: true,
+      enabled: onTap != null,
+      label: 'Capture photo',
+      child: Material(
+        type: MaterialType.transparency,
+        shape: const CircleBorder(),
+        clipBehavior: Clip.antiAlias,
+        child: InkWell(
+          onTap: onTap,
+          splashColor: Colors.white24,
+          child: Container(
         width: 72,
         height: 72,
         decoration: BoxDecoration(
@@ -501,6 +616,8 @@ class _ShutterButton extends StatelessWidget {
               color: onTap != null ? AppColors.accent : AppColors.textMuted,
             ),
           ),
+        ),
+      ),
         ),
       ),
     );
@@ -527,28 +644,43 @@ class _SideButton extends StatelessWidget {
         : accent
             ? AppColors.danger
             : Colors.white;
-    return GestureDetector(
-      onTap: onTap,
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Container(
-            width: 52,
-            height: 52,
-            decoration: BoxDecoration(
-              shape: BoxShape.circle,
-              color: Colors.white.withValues(alpha: 0.12),
-              border: Border.all(
-                  color: accent
-                      ? AppColors.danger.withValues(alpha: 0.6)
-                      : Colors.white.withValues(alpha: 0.2)),
-            ),
-            child: Icon(icon, color: color, size: 24),
+    return Semantics(
+      button: true,
+      enabled: onTap != null,
+      label: label,
+      excludeSemantics: true,
+      child: InkWell(
+        onTap: onTap == null
+            ? null
+            : () {
+                HapticFeedback.selectionClick();
+                onTap!();
+              },
+        borderRadius: BorderRadius.circular(12),
+        child: Padding(
+          padding: const EdgeInsets.all(4),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                width: 52,
+                height: 52,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  color: Colors.white.withValues(alpha: 0.12),
+                  border: Border.all(
+                      color: accent
+                          ? AppColors.danger.withValues(alpha: 0.6)
+                          : Colors.white.withValues(alpha: 0.2)),
+                ),
+                child: Icon(icon, color: color, size: 24),
+              ),
+              const SizedBox(height: 6),
+              Text(label,
+                  style: AppTextStyles.bodySm.copyWith(color: color, fontSize: 12)),
+            ],
           ),
-          const SizedBox(height: 6),
-          Text(label,
-              style: AppTextStyles.bodySm.copyWith(color: color, fontSize: 11)),
-        ],
+        ),
       ),
     );
   }

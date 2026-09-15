@@ -17,7 +17,9 @@ class ScanApi {
 
   /// POST /scan -> scan_id. One retry on network failure (Wi-Fi blip).
   /// Pass [prevScanId] to diff cracks against an earlier scan of the same surface.
-  Future<String> submitScan(Uint8List imageBytes, {String? prevScanId}) async {
+  /// Pass [componentType] — what the user picked before capture.
+  Future<String> submitScan(Uint8List imageBytes,
+      {String? prevScanId, String? componentType}) async {
     for (var attempt = 0; ; attempt++) {
       try {
         final req = http.MultipartRequest(
@@ -26,6 +28,9 @@ class ScanApi {
           ..files.add(http.MultipartFile.fromBytes('image', imageBytes,
               filename: 'scan.jpg'));
         if (prevScanId != null) req.fields['prev_scan_id'] = prevScanId;
+        if (componentType != null) {
+          req.fields['component_type'] = componentType;
+        }
         final res = await http.Response.fromStream(
             await req.send().timeout(const Duration(seconds: 30)));
         if (res.statusCode != 200) {
@@ -55,6 +60,25 @@ class ScanApi {
     ).timeout(const Duration(seconds: 10));
     if (res.statusCode != 200) {
       throw Exception('poll failed (${res.statusCode}): ${res.body}');
+    }
+    return ScanResult.fromJson(jsonDecode(res.body) as Map<String, dynamic>);
+  }
+
+  /// POST /scan/{id}/measurement — AR-measured crack length; backend converts
+  /// to width and grades it (JBDPA / BRE 251). Returns the updated scan.
+  Future<ScanResult> submitMeasurement(String scanId, double lengthCm) async {
+    final res = await http
+        .post(
+          Uri.parse('${AppConfig.apiBase}/scan/$scanId/measurement'),
+          headers: {
+            'Authorization': 'Bearer $_jwt',
+            'Content-Type': 'application/json',
+          },
+          body: jsonEncode({'length_cm': lengthCm}),
+        )
+        .timeout(const Duration(seconds: 15));
+    if (res.statusCode != 200) {
+      throw Exception('measurement failed (${res.statusCode}): ${res.body}');
     }
     return ScanResult.fromJson(jsonDecode(res.body) as Map<String, dynamic>);
   }

@@ -14,14 +14,16 @@ import 'package:vector_math/vector_math_64.dart' as vm;
 
 import '../config.dart';
 import '../models.dart';
+import '../scan_api.dart';
 import 'result_screen.dart' show riskColors;
 
 /// Live AR view: tap a detected plane on the inspected element to pin a
 /// 3D marker anchor; risk + component info shown as an overlay badge.
 class ArScreen extends StatefulWidget {
   final ScanResult result;
+  final bool startMeasuring; // opened from "Measure crack for a grade"
 
-  const ArScreen({super.key, required this.result});
+  const ArScreen({super.key, required this.result, this.startMeasuring = false});
 
   @override
   State<ArScreen> createState() => _ArScreenState();
@@ -38,29 +40,25 @@ class _ArScreenState extends State<ArScreen> with SingleTickerProviderStateMixin
   late final AnimationController _pulseCtrl;
   late final Animation<double> _pulseAnim;
   bool _vertical = false;
-  bool _measuring = false;
+  late bool _measuring = widget.startMeasuring;
   vm.Vector3? _measureStart;
   double? _measureCm;
-  double? _widthMm;
+  bool _grading = false;
+  // Starts as the scan's preliminary result; replaced by the backend's
+  // standards-graded result (JBDPA / BRE 251) after a measurement. Width
+  // conversion and grading live only in backend inference.py.
+  late ScanResult _result = widget.result;
 
-  // JBDPA damage class from max residual crack width (Standard for
-  // Post-earthquake Damage Level Classification; 13WCEE Nos.124/1179).
-  // I <0.2mm, II 0.2-1.0, III 1.0-2.0, IV >2.0. Mirrors backend inference.py.
-  static (String, String) _jbdpa(double widthMm) {
-    if (widthMm < 0.2) return ('I', 'LOW');
-    if (widthMm <= 1.0) return ('II', 'MEDIUM');
-    if (widthMm <= 2.0) return ('III', 'HIGH');
-    return ('IV', 'HIGH');
-  }
-
-  /// Metric width from the two-tap measurement: the measured real length maps
-  /// the crack's pixel length to mm, and width follows from the px ratio.
-  double? _estimateWidthMm(double measuredCm) {
-    final dets = widget.result.detections;
-    if (dets.isEmpty) return null;
-    final d = dets.reduce((a, b) => a.areaRatio >= b.areaRatio ? a : b);
-    if (d.lengthPx <= 0 || d.widthPx <= 0) return null;
-    return measuredCm * 10 * (d.widthPx / d.lengthPx);
+  Future<void> _submitMeasurement(double lengthCm) async {
+    setState(() => _grading = true);
+    try {
+      final updated = await scanApi.submitMeasurement(_result.id, lengthCm);
+      if (mounted) setState(() => _result = updated);
+    } catch (e) {
+      _toast('Could not grade measurement: $e');
+    } finally {
+      if (mounted) setState(() => _grading = false);
+    }
   }
 
   @override
@@ -75,7 +73,7 @@ class _ArScreenState extends State<ArScreen> with SingleTickerProviderStateMixin
 
   // Risk-colored pin GLBs generated into backend/static (see marker_*.glb)
   String get _markerUrl =>
-      '${AppConfig.apiBase}/static/marker_${(widget.result.riskLevel ?? 'LOW').toLowerCase()}.glb';
+      '${AppConfig.apiBase}/static/marker_${(_result.riskLevel ?? 'LOW').toLowerCase()}.glb';
 
   // Per-scan crack-overlay quad (transparent texture with the crack polygons),
   // built on demand by the backend. Only meaningful when cracks were found.
@@ -138,11 +136,11 @@ class _ArScreenState extends State<ArScreen> with SingleTickerProviderStateMixin
       } else {
         setState(() {
           _measureCm = _measureStart!.distanceTo(p) * 100;
-          _widthMm = _estimateWidthMm(_measureCm!);
           _measureStart = null;
           _measuring = false;
         });
         _setOverlayHidden(false);
+        _submitMeasurement(_measureCm!);
       }
       return;
     }
@@ -207,9 +205,15 @@ class _ArScreenState extends State<ArScreen> with SingleTickerProviderStateMixin
 
   @override
   Widget build(BuildContext context) {
-    final risk = widget.result.riskLevel ?? 'LOW';
+    final risk = _result.riskLevel ?? 'LOW';
     final color = riskColors[risk] ?? Colors.grey;
-    return Scaffold(
+    // Hand the (possibly re-graded) scan back so the result screen updates.
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop) Navigator.of(context).pop(_result);
+      },
+      child: Scaffold(
       appBar: AppBar(
         title: const Text('AR inspection'),
         actions: [
@@ -224,7 +228,6 @@ class _ArScreenState extends State<ArScreen> with SingleTickerProviderStateMixin
               _measuring = false;
               _measureStart = null;
               _measureCm = null;
-              _widthMm = null;
             }),
           ),
         ],
@@ -238,7 +241,6 @@ class _ArScreenState extends State<ArScreen> with SingleTickerProviderStateMixin
             _measureStart = null;
             if (_measuring) {
               _measureCm = null;
-              _widthMm = null;
             }
           });
           _setOverlayHidden(_measuring);
@@ -268,15 +270,15 @@ class _ArScreenState extends State<ArScreen> with SingleTickerProviderStateMixin
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
-                      '$risk RISK — ${widget.result.componentType ?? '?'}',
+                      '$risk RISK${_result.isMeasured ? '' : ' (preliminary)'} — ${_result.componentType ?? '?'}',
                       style: const TextStyle(
                           color: Colors.white,
                           fontWeight: FontWeight.bold,
                           fontSize: 16),
                     ),
                     Text(
-                      'Cracks: ${widget.result.crackCount ?? 0} · '
-                      'Area: ${((widget.result.crackAreaRatio ?? 0) * 100).toStringAsFixed(2)}%',
+                      'Cracks: ${_result.crackCount ?? 0} · '
+                      'Area: ${((_result.crackAreaRatio ?? 0) * 100).toStringAsFixed(2)}%',
                       style: const TextStyle(color: Colors.white),
                     ),
                     if (_measuring)
@@ -290,8 +292,7 @@ class _ArScreenState extends State<ArScreen> with SingleTickerProviderStateMixin
                     else if (_measureCm != null)
                       Text(
                           'Measured: ${_measureCm!.toStringAsFixed(1)} cm'
-                          '${_widthMm != null ? ' · width ≈ ${_widthMm!.toStringAsFixed(1)} mm '
-                              '· JBDPA class ${_jbdpa(_widthMm!).$1} (${_jbdpa(_widthMm!).$2})' : ''}',
+                          '${_grading ? ' · grading…' : _result.isMeasured ? ' · width ≈ ${_result.crackWidthMm!.toStringAsFixed(1)} mm · ${_result.gradeSummary}' : ''}',
                           style: const TextStyle(
                               color: Colors.white,
                               fontWeight: FontWeight.bold))
@@ -360,6 +361,7 @@ class _ArScreenState extends State<ArScreen> with SingleTickerProviderStateMixin
             ),
         ],
       ),
+    ),
     );
   }
 }

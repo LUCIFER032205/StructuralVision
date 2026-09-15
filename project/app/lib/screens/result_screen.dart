@@ -8,6 +8,7 @@ import '../models.dart';
 import '../scan_api.dart';
 import '../theme.dart';
 import 'ar_screen.dart';
+import 'component_select_sheet.dart';
 
 const riskColors = {
   'HIGH':   AppColors.riskHigh,
@@ -15,12 +16,39 @@ const riskColors = {
   'LOW':    AppColors.riskLow,
 };
 
-class ResultScreen extends StatelessWidget {
+class ResultScreen extends StatefulWidget {
   final ScanResult result;
   final Uint8List  imageBytes;
 
   const ResultScreen(
       {super.key, required this.result, required this.imageBytes});
+
+  @override
+  State<ResultScreen> createState() => _ResultScreenState();
+}
+
+class _ResultScreenState extends State<ResultScreen> {
+  // Replaced when the AR screen returns a measured (re-graded) scan.
+  late ScanResult result = widget.result;
+  late final Future<ui.Image> _image = _decode(widget.imageBytes);
+  int? _selected; // tapped detection index, shows its confidence
+
+  Future<void> _openAr({bool measure = false}) async {
+    final updated = await Navigator.of(context).push<ScanResult>(
+        MaterialPageRoute(
+            builder: (_) => ArScreen(result: result, startMeasuring: measure)));
+    if (updated != null && mounted) setState(() => result = updated);
+  }
+
+  void _onImageTap(Offset p) {
+    // Topmost polygon containing the tap, in image pixel coordinates.
+    int? hit;
+    for (var i = 0; i < result.detections.length; i++) {
+      final poly = result.detections[i].polygon;
+      if (poly.length >= 3 && _pathOf(poly).contains(p)) hit = i;
+    }
+    setState(() => _selected = hit);
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -54,6 +82,7 @@ class ResultScreen extends StatelessWidget {
 
     final risk  = result.riskLevel ?? 'LOW';
     final color = riskColors[risk] ?? AppColors.textMuted;
+    final noCracks = result.detections.isEmpty;
 
     return Scaffold(
       backgroundColor: AppColors.bg,
@@ -69,7 +98,7 @@ class ResultScreen extends StatelessWidget {
           // ── Annotated image ────────────────────────────────────────────
           Expanded(
             child: FutureBuilder<ui.Image>(
-              future: _decode(imageBytes),
+              future: _image,
               builder: (context, snap) {
                 if (!snap.hasData) {
                   return const Center(
@@ -77,15 +106,24 @@ class ResultScreen extends StatelessWidget {
                           color: AppColors.accent));
                 }
                 final img = snap.data!;
+                // Pinch to zoom: hairline cracks are unreadable at fit-to-screen.
                 return Container(
                   color: Colors.black,
-                  child: FittedBox(
-                    child: SizedBox(
-                      width:  img.width.toDouble(),
-                      height: img.height.toDouble(),
-                      child: CustomPaint(
-                        painter: _OverlayPainter(
-                            img, result.detections, color),
+                  child: InteractiveViewer(
+                    maxScale: 8,
+                    child: Center(
+                      child: FittedBox(
+                        child: GestureDetector(
+                          onTapUp: (d) => _onImageTap(d.localPosition),
+                          child: SizedBox(
+                            width:  img.width.toDouble(),
+                            height: img.height.toDouble(),
+                            child: CustomPaint(
+                              painter: _OverlayPainter(img,
+                                  result.detections, color, _selected),
+                            ),
+                          ),
+                        ),
                       ),
                     ),
                   ),
@@ -117,12 +155,15 @@ class ResultScreen extends StatelessWidget {
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
                               Text(
-                                result.componentType ?? 'Unknown',
+                                ComponentSelectSheet.labelFor(
+                                    result.componentType),
                                 style: AppTextStyles.titleLg,
                               ),
-                              if (result.componentConfidence != null)
+                              if (!noCracks)
                                 Text(
-                                  '${(result.componentConfidence! * 100).toStringAsFixed(0)}% confidence',
+                                  result.isMeasured
+                                      ? 'Measured: ${result.crackWidthMm!.toStringAsFixed(1)} mm · ${result.gradeSummary}'
+                                      : 'Preliminary estimate from the photo',
                                   style: AppTextStyles.bodySm,
                                 ),
                             ],
@@ -133,6 +174,39 @@ class ResultScreen extends StatelessWidget {
 
                     const SizedBox(height: 16),
 
+                    // A clean surface is a result, not an absence of one.
+                    if (noCracks)
+                      Container(
+                        padding: const EdgeInsets.all(14),
+                        decoration: BoxDecoration(
+                          color: AppColors.success.withValues(alpha: 0.1),
+                          borderRadius: BorderRadius.circular(kCardRadius),
+                          border: Border.all(
+                              color: AppColors.success.withValues(alpha: 0.4)),
+                        ),
+                        child: Row(
+                          children: [
+                            const Icon(Icons.verified_outlined,
+                                color: AppColors.success, size: 28),
+                            const SizedBox(width: 12),
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text('No cracks detected',
+                                      style: AppTextStyles.titleMd),
+                                  Text(
+                                    'Hairline cracks in poor light can be missed — '
+                                    're-scan closer if you can see one.',
+                                    style: AppTextStyles.bodySm,
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ],
+                        ),
+                      )
+                    else ...[
                     // Stats row
                     Row(
                       children: [
@@ -191,19 +265,43 @@ class ResultScreen extends StatelessWidget {
                         ),
                       ),
 
+                    // Tapped crack: model confidence
+                    Padding(
+                      padding: const EdgeInsets.only(top: 10),
+                      child: Text(
+                        _selected == null
+                            ? 'Tap a crack for model confidence · fainter outline = less sure'
+                            : 'Crack ${_selected! + 1}: ${(result.detections[_selected!].confidence * 100).toStringAsFixed(0)}% confident · '
+                                '${result.detections[_selected!].crackType == 'paint' ? 'surface/paint' : 'structural'}',
+                        style: _selected == null
+                            ? AppTextStyles.bodySm
+                            : AppTextStyles.bodyMd
+                                .copyWith(fontWeight: FontWeight.w600),
+                      ),
+                    ),
+                    ],
+
                     const SizedBox(height: 16),
+
+                    // Preliminary -> measured is the one step that turns the
+                    // estimate into a standards-based grade; make it obvious.
+                    if (!noCracks && !result.isMeasured) ...[
+                      FilledButton.icon(
+                        icon: const Icon(Icons.straighten, size: 18),
+                        label: const Text('Measure crack for a JBDPA / BRE grade'),
+                        onPressed: () => _openAr(measure: true),
+                      ),
+                      const SizedBox(height: 10),
+                    ],
 
                     // Actions
                     Row(
                       children: [
                         Expanded(
-                          child: FilledButton.icon(
+                          child: OutlinedButton.icon(
                             icon: const Icon(Icons.view_in_ar, size: 18),
                             label: const Text('View in AR'),
-                            onPressed: () => Navigator.of(context).push(
-                                MaterialPageRoute(
-                                    builder: (_) =>
-                                        ArScreen(result: result))),
+                            onPressed: _openAr,
                           ),
                         ),
                         const SizedBox(width: 10),
@@ -287,36 +385,51 @@ class _StatChip extends StatelessWidget {
   }
 }
 
+Path _pathOf(List<List<double>> polygon) {
+  final path = Path()..moveTo(polygon[0][0], polygon[0][1]);
+  for (final p in polygon.skip(1)) {
+    path.lineTo(p[0], p[1]);
+  }
+  return path..close();
+}
+
 class _OverlayPainter extends CustomPainter {
   final ui.Image         image;
   final List<CrackDetection> detections;
   final Color            color;
+  final int?             selected;
 
-  _OverlayPainter(this.image, this.detections, this.color);
+  _OverlayPainter(this.image, this.detections, this.color, this.selected);
 
   @override
   void paint(Canvas canvas, Size size) {
     canvas.drawImage(image, Offset.zero, Paint());
+    // Stroke scales with image size so it stays visible on 4000px photos.
+    final unit = size.longestSide / 1024;
 
-    for (final d in detections) {
+    for (var i = 0; i < detections.length; i++) {
+      final d = detections[i];
       if (d.polygon.length < 3) continue;
+      // Backend keeps detections at conf >= 0.4: map 0.4..1 -> 0..1 so a
+      // weak detection draws thin and faint, a strong one thick and solid.
+      final t = ((d.confidence - 0.4) / 0.6).clamp(0.0, 1.0);
       final c = d.crackType == 'paint' ? Colors.blueGrey : color;
-      final stroke = Paint()
-        ..color = c
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = 3;
-      final fill = Paint()..color = c.withValues(alpha: 0.3);
-      final path = Path()..moveTo(d.polygon[0][0], d.polygon[0][1]);
-      for (final p in d.polygon.skip(1)) {
-        path.lineTo(p[0], p[1]);
-      }
-      path.close();
-      canvas.drawPath(path, fill);
-      canvas.drawPath(path, stroke);
+      final isSel = i == selected;
+      final path = _pathOf(d.polygon);
+      canvas.drawPath(path, Paint()..color = c.withValues(alpha: 0.15 + 0.25 * t));
+      canvas.drawPath(
+          path,
+          Paint()
+            ..color = isSel ? Colors.white : c.withValues(alpha: 0.45 + 0.55 * t)
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = (isSel ? 5.0 : 1.5 + 3.5 * t) * unit);
     }
   }
 
   @override
   bool shouldRepaint(covariant _OverlayPainter old) =>
-      old.image != image || old.detections != detections;
+      old.image != image ||
+      old.detections != detections ||
+      old.selected != selected ||
+      old.color != color;
 }

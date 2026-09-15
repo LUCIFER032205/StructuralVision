@@ -104,14 +104,15 @@ if __name__ == "__main__":
     assert tex is not None and tex.mode == "RGBA"
     assert np.asarray(tex)[:, :, 3].max() > 0, "texture fully transparent"
     assert _severity([dets[0]], "column") == "HIGH"           # 0.20*1.5 = 0.30
-    # The field-report case: 5.83% area on a column must label LOW in AR,
-    # matching the scan screen (0.0583*1.5 = 0.087 < 0.10).
-    assert _severity([{"area_ratio": 0.0583, "confidence": 0.97}], "column") == "LOW"
-    assert _severity([{"area_ratio": 0.10, "confidence": 0.9}], "column") == "MEDIUM"
+    # demo_kit high_1 (wide spalled crack, 5.73% area, one mask after the
+    # iou=0.45 dedupe): 0.0573*1.5 = 0.086 -> HIGH, same in AR as on screen.
+    assert _severity([{"area_ratio": 0.0573, "confidence": 0.8}], "column") == "HIGH"
+    assert _severity([{"area_ratio": 0.025, "confidence": 0.9}], "column") == "MEDIUM"
     # Two cracks that only together cross the MEDIUM threshold must both
     # label MEDIUM — the scan-level risk, not per-crack.
-    assert _severity([{"area_ratio": 0.04, "confidence": 0.9},
-                      {"area_ratio": 0.04, "confidence": 0.9}], "column") == "MEDIUM"
-    # No component selected -> neutral weight (cf 1.0), not a guessed one.
-    assert _severity([{"area_ratio": 0.12, "confidence": 0.9}], None) == "MEDIUM"
+    assert _severity([{"area_ratio": 0.012, "confidence": 0.9},
+                      {"area_ratio": 0.012, "confidence": 0.9}], "column") == "MEDIUM"
+    # No component selected -> neutral weight (cf 1.0), not a guessed one
+    # (as a column the same crack would be HIGH).
+    assert _severity([{"area_ratio": 0.05, "confidence": 0.9}], None) == "MEDIUM"
     print(f"overlay self-check OK — {len(glb)} bytes, extents {ext}")

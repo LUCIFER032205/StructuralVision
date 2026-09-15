@@ -42,7 +42,10 @@ def detect_cracks(img: Image.Image):
     img_area = float(img.width * img.height)
     # conf 0.4: v4 model scores 99.0% image accuracy (199/200 cracks, 3/200 false alarms on SDNET2018);
     # v2 needed 0.5 because 0.25 flagged bag seams / curtain edges as cracks
-    res = yolo.predict(img, imgsz=1024, conf=0.4, verbose=False)[0]
+    # iou 0.45 (default 0.7): v4 emits a second mask on the same long crack at
+    # bbox IoU 0.49-0.62 (scans 0310b12e, d5b767c0, 1e2d59fc), doubling area ratio
+    # and the risk. Max confidence per image is unchanged, so accuracy is too.
+    res = yolo.predict(img, imgsz=1024, conf=0.4, iou=0.45, verbose=False)[0]
     out = []
     if res.masks is None:
         return out
@@ -148,8 +151,11 @@ def _polygon_area(pts: np.ndarray) -> float:
 # Tier 1 (scan time, no physical scale) -> risk_source "preliminary".
 # IN-HOUSE HEURISTIC, not from a standard. DI = crack_area_ratio x CF x SF. CF
 # weights load-bearing members higher (JBDPA ordering: vertical load-bearing >
-# horizontal > non-structural finishes); the numeric values and the 0.10/0.25
-# thresholds are empirical picks on our own scan history.
+# horizontal > non-structural finishes); the numeric values are empirical.
+# Thresholds 0.03/0.07 re-fit 2026-09-15 on v4 + iou dedupe: demo_kit on column
+# gives low_1/low_2 LOW, medium_1 MEDIUM, high_1 HIGH; medium_2 and high_2 grade
+# one level down because their cracks are tagged paint (SF 0.2). The old
+# 0.10/0.25 were fit on double-counted duplicate masks.
 # ponytail: no published standard maps pixel area ratio to risk — every one
 # grades physical crack width. Tier 2 supersedes this once width is measured.
 _CF = {"column": 1.5, "rc_wall": 1.5, "beam": 1.3, "slab": 1.0, "wall": 0.8, "ceiling": 0.2}
@@ -164,9 +170,9 @@ def compute_risk(detections, component_type: str | None = None) -> str:
     cf = _CF.get(component_type, 1.0)
     di = sum(d["area_ratio"] * cf * _SF.get(d.get("crack_type", "structural"), 1.0)
              for d in detections)
-    if di >= 0.25:
+    if di >= 0.07:
         return "HIGH"
-    if di >= 0.10:
+    if di >= 0.03:
         return "MEDIUM"
     return "LOW"
 

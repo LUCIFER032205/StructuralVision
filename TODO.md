@@ -43,6 +43,13 @@ Scan each, write down: cracks found (y/n), risk shown, correct? (y/n)
 
 Save failures as screenshots + scan id. Anything wrong gets fixed tomorrow, before new features.
 
+## Tomorrow — one build with both pending changes
+- Straight-edge false-alarm filter (NOT applied yet): drop a detection whose mask fills > 0.6 of its
+  min-area rotated rect (table/beam/TV edges fill it, wiggly cracks don't). Eval 2026-09-15:
+  eval200 199/200 either way; SDNET FA 2→1; app photos FA 6/28→2/28, app cracks 9/9 kept.
+  Cutoff was picked on those same app photos → validate on tonight's 10 non-crack photos first.
+- Then one APK with filter + site preview (commit 9ebf26e), re-test sections A and D.
+
 ## After testing (only if tonight is clean)
 - Paper + `model_evolution_report.md`: v2 → v3 rejected → v4, image-level accuracy, NaN investigation,
   dataset 9,816 images, duplicate-mask + real-photo false-alarm findings.

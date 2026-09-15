@@ -36,6 +36,11 @@ Scan each, write down: cracks found (y/n), risk shown, correct? (y/n)
 - [ ] Two-tap measure → risk switches to "measured" grade (JBDPA/BRE251)
 - [ ] Vertical-plane toggle (may SIGSEGV — note it if so)
 
+### D. Site preview (3D building) — only in an APK built after commit 9ebf26e
+- [ ] Building icon on camera screen → floor dots → tap → tower appears (~40 cm)
+- [ ] "Life-size" → 20 m tower; "Miniature" → back; refresh icon → place again
+- [ ] Back to camera → scan → crack AR still works (camera handover)
+
 Save failures as screenshots + scan id. Anything wrong gets fixed tomorrow, before new features.
 
 ## After testing (only if tonight is clean)

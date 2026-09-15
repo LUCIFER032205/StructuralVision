@@ -13,6 +13,7 @@ import 'batch_screen.dart';
 import 'component_select_sheet.dart';
 import 'history_screen.dart';
 import 'result_screen.dart';
+import 'site_preview_screen.dart';
 
 class CameraScreen extends StatefulWidget {
   const CameraScreen({super.key});
@@ -201,6 +202,17 @@ class _CameraScreenState extends State<CameraScreen> {
     if (mounted) _init();
   }
 
+  // Camera must be released before ARCore opens (holding it SIGSEGVs libarcore_c.so).
+  Future<void> _openSitePreview() async {
+    final c = _controller;
+    _controller = null;
+    await c?.dispose();
+    if (!mounted) return;
+    await Navigator.of(context)
+        .push(MaterialPageRoute(builder: (_) => const SitePreviewScreen()));
+    if (mounted) _init();
+  }
+
   Future<void> _analyze(Uint8List bytes, {required String componentType}) async {
     setState(() => _status = 'Uploading…');
     final scanId = await scanApi.submitScan(bytes, componentType: componentType);
@@ -256,6 +268,11 @@ class _CameraScreenState extends State<CameraScreen> {
             label: 'History',
             onTap: () => Navigator.of(context).push(
                 MaterialPageRoute(builder: (_) => const HistoryScreen())),
+          ),
+          _NavAction(
+            icon: Icons.apartment_rounded,
+            label: 'Site preview (3D)',
+            onTap: _openSitePreview,
           ),
           _NavAction(
             icon: Icons.logout_rounded,

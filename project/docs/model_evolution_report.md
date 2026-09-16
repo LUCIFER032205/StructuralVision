@@ -279,21 +279,53 @@ upsamples them to the image, so the thinnest mask the network can draw is alread
 **median of 56 px wide**. On a 1.5 m hairline that is roughly **280× the true
 width**. The mask is reporting its own granularity, not the crack.
 
-**What works instead:** measure the crack from the photograph. Sampling intensity
-profiles perpendicular to the crack's major axis and taking the median
-full-width-half-minimum of the dark trough gives 4.0 px on a thin crack where the
-mask says 23.8 px — validated against zoomed crops of the same crack.
+**What works instead — and what does not.** The obvious repair is to measure the
+crack from the photograph rather than from the mask, taking the full width at half
+minimum (FWHM) of the dark trough. That is better, but it has its own hard floor:
+on synthetic ground truth blurred by a camera point-spread function, a 0.2 px crack
+and a 2.0 px crack **both read exactly 3.00 px**. FWHM cannot measure a hairline at
+all — it returns its own floor.
 
-**What it costs:** the trough method under-reads on broad spalled patches, where
-half-minimum of a wide dark region falls inside the region. So neither estimator is
-trustworthy alone. The system keeps both — the trough grades, the mask is the upper
-bound — and when they disagree by more than 2× it reports a *range* with an
-instruction to verify with a crack gauge, rather than a single number carrying
-precision it does not have.
+The estimator that does work below one pixel is the **equivalent width**: the
+integrated intensity deficit across the profile divided by the crack's full core
+contrast. Total darkness stays proportional to true width even when the crack is
+blurred below a pixel, so the measurement survives where FWHM collapses.
+
+| true width | FWHM | equivalent width |
+|---|---|---|
+| 0.2 px | 3.00 (+2.80) | 0.38 (+0.18) |
+| 0.5 px | 3.00 (+2.50) | 0.69 (+0.19) |
+| 1.0 px | 3.00 (+2.00) | 1.16 (+0.16) |
+| 2.0 px | 3.00 (+1.00) | 2.17 (+0.17) |
+| 8.0 px | 8.00 (+0.00) | 8.16 (+0.16) |
+
+Two implementation details are load-bearing, and both were found by testing on real
+photographs after the synthetic test passed:
+
+1. **Core contrast must be taken from the crack's widest section**, where the crack
+   genuinely is resolved, and reused along the thin end. Using each sample's own
+   minimum — the obvious choice — reads **4.88 px for a true 0.2 px crack**, because
+   a sub-pixel crack never reaches its own core darkness through the blur.
+2. **The sampling window must clear the crack on both sides.** A fixed ±25 px window
+   sat entirely inside a wide spalled crack, leaving no wall to measure the deficit
+   against, and read 4.7 px for a ~60 px crack. Sizing the window from the *mask*
+   over-corrects, because the mask over-reads thin cracks and then drags metres of
+   wall texture into the integral; sizing it from a first-pass FWHM works.
+
+**The limit that remains.** A crack that is sub-pixel along its *entire* length has
+no resolved section from which to calibrate core contrast, so its width over-reads.
+This is detected rather than hidden: such a measurement is returned flagged, and the
+interface reports the millimetres-per-pixel at that framing and asks for a closer
+photograph. That is the only real remedy — to grade a 0.2 mm crack, the frame must be
+roughly 10 cm across. No amount of post-processing substitutes for spatial sampling.
 
 **The general lesson:** an instance-segmentation mask is a detection artifact, not a
 measurement instrument. Its resolution floor is set by the network's prototype
 stride, and any quantity derived by dividing mask dimensions inherits that floor.
+The corollary is that every estimator has a floor worth finding before trusting it —
+the photometric replacement for the mask had one too, and it took synthetic ground
+truth to expose it, because on real photographs a floored reading looks like a
+measurement.
 
 ## 5b. False-alarm filtering
 

@@ -42,12 +42,20 @@ reproduce exactly from plausible tap distances (50 cm, 14.7 cm) using the stored
 width. YOLOv8-seg draws mask prototypes at imgsz/4, so the thinnest mask it can emit is
 ~10 image px on a 2560 px photo; real crack masks measured a median of 56 px. On a 1.5 m
 hairline that is ~280x the true width.
-- `inference.profile_width_px()` measures the crack off the photo (median full-width-
-  half-minimum of the dark trough, sampled perpendicular to the crack). Validated against
-  zoomed crops: 4.0 px on a thin crack where the mask says 23.8 px.
-- It under-reads on broad spalled patches, so both figures are kept: the trough grades,
-  the mask is the upper bound, and past 2x disagreement the width prints as a RANGE with
-  a "verify with a crack gauge" note instead of a false-precision number.
+- `inference.profile_width_px()` measures the crack off the photo. First attempt used
+  full-width-half-minimum, which turned out to have its OWN floor: on synthetic ground
+  truth a 0.2 px crack and a 2.0 px crack both read exactly 3.00 px. Replaced with
+  EQUIVALENT WIDTH (integrated intensity deficit / core contrast), which stays accurate
+  below one pixel: +0.18 px error over true widths 0.2-8 px vs FWHM's +2.8 px.
+- Two details are load-bearing: core contrast must come from the crack's WIDEST section
+  (each sample's own minimum reads 4.88 px for a true 0.2 px crack), and the sampling
+  window must clear the crack on both sides, sized from a first-pass FWHM not the mask.
+- The mask is kept as an upper bound; past 2x disagreement the width prints as a RANGE
+  with a "verify with a crack gauge" note instead of a false-precision number.
+- HONEST LIMIT: a crack sub-pixel along its WHOLE length has no resolved section to
+  calibrate from and over-reads. Flagged `resolved: false`; the app then shows the
+  mm-per-pixel at that framing and asks for a closer shot. To grade a 0.2 mm crack the
+  frame needs to be ~10 cm across. Zoom exists now, so this is actionable.
 - `implausible_measurement()` rejects a two-tap distance implying a frame outside
   5 cm - 15 m, with the reason shown in the app (typed `MeasurementRejected`).
 
@@ -115,6 +123,8 @@ APK is already built and copied to `backend/static/`.
 - [ ] Wall crack -> "Enter length" with a tape -> same grade path
 - [ ] Deliberately tap the floor behind a wall crack -> rejected with a reason, no grade
 - [ ] A hairline -> width shows as a RANGE + "verify with a crack gauge"
+- [ ] A very fine hairline at arm's length -> "1 pixel ~ X mm, re-shoot closer"
+- [ ] Then re-shoot the SAME crack close up / zoomed -> a real width, no warning
 - [ ] Measuring crosshair visible while measuring
 
 ### D. AR surfaces
@@ -129,6 +139,14 @@ APK is already built and copied to `backend/static/`.
 - [ ] Rescan the overhead cable -> STILL a false alarm, expected, not a regression
 - [ ] A/B the resolution change: same crack, old APK vs new, see if 1080p finds more
 - [ ] `demo_kit/missed.jpeg` off a screen -> still missed at conf 0.4, expected
+
+### F. Photo collection (unblocks the two remaining open items)
+Costs nothing but pointing the phone at a few more things while you are out.
+- [ ] 10-15 photos of CABLES / wires / conduit running across walls. One example is
+      not enough to build a filter on; this is what would settle the cable false
+      alarm, either as a validated filter or as hard negatives for a fine-tune.
+- [ ] 5-10 close-ups of real hairline cracks, frame ~10-20 cm across, so the
+      sub-pixel width path can be checked against a ruler or crack gauge.
 
 ## Still open after Saturday
 - **Paper + `model_evolution_report.md`** — the only graded deliverable, untouched.

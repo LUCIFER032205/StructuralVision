@@ -109,6 +109,18 @@ class ScanApi {
     return res.bodyBytes;
   }
 
+  /// GET /report?ids=… -> one PDF covering a whole multi-photo inspection.
+  Future<Uint8List> getBatchReport(List<String> scanIds) async {
+    final res = await http.get(
+      Uri.parse('${AppConfig.apiBase}/report?ids=${scanIds.join(",")}'),
+      headers: {'Authorization': 'Bearer $_jwt'},
+    ).timeout(const Duration(seconds: 60));
+    if (res.statusCode != 200) {
+      throw Exception('report failed (${res.statusCode}): ${res.body}');
+    }
+    return res.bodyBytes;
+  }
+
   /// Poll every 2s until done/error. Tolerates transient poll failures;
   /// gives up after 2 minutes total.
   Future<ScanResult> waitForResult(String scanId) async {

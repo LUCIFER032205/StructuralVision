@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:printing/printing.dart';
 
 import '../models.dart';
 import '../scan_api.dart';
@@ -18,6 +19,7 @@ class _BatchScreenState extends State<BatchScreen> {
   late final List<ScanResult?> _results =
       List.filled(widget.scanIds.length, null);
   bool _opening = false;
+  bool _sharing = false;
 
   @override
   void initState() {
@@ -54,11 +56,35 @@ class _BatchScreenState extends State<BatchScreen> {
     }
   }
 
+  /// One PDF for the whole session: summary table of every photo and the
+  /// component it was scanned as, then a detail page each.
+  Future<void> _shareReport() async {
+    final ids = [
+      for (var i = 0; i < _results.length; i++)
+        if (_results[i]?.isDone ?? false) widget.scanIds[i]
+    ];
+    if (ids.isEmpty || _sharing) return;
+    setState(() => _sharing = true);
+    try {
+      final pdf = await scanApi.getBatchReport(ids);
+      await Printing.sharePdf(
+          bytes: pdf, filename: 'inspection_${ids.first.substring(0, 8)}.pdf');
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('Report failed: $e')));
+      }
+    } finally {
+      if (mounted) setState(() => _sharing = false);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final done  = _results.where((r) => r != null).length;
     final total = _results.length;
     final progress = total == 0 ? 0.0 : done / total;
+    final ready = _results.where((r) => r?.isDone ?? false).length;
 
     return Scaffold(
       appBar: AppBar(
@@ -68,7 +94,11 @@ class _BatchScreenState extends State<BatchScreen> {
           onPressed: () => Navigator.of(context).pop(),
         ),
       ),
-      body: Column(
+      // One bottom inset for the whole screen: without it the last card sat
+      // under the Android gesture/nav bar and was half cut off.
+      body: SafeArea(
+        top: false,
+        child: Column(
         children: [
           // ── Progress header ────────────────────────────────────────────
           Container(
@@ -118,7 +148,29 @@ class _BatchScreenState extends State<BatchScreen> {
               },
             ),
           ),
+          // ── Combined report ────────────────────────────────────────────
+          if (ready > 0)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(
+                  kPagePadding, 0, kPagePadding, 12),
+              child: SizedBox(
+                  width: double.infinity,
+                  child: FilledButton.icon(
+                    icon: _sharing
+                        ? const SizedBox(
+                            width: 16,
+                            height: 16,
+                            child: CircularProgressIndicator(strokeWidth: 2))
+                        : const Icon(Icons.picture_as_pdf, size: 18),
+                    label: Text(_sharing
+                        ? 'Building report…'
+                        : 'Share full report ($ready photos)'),
+                  onPressed: _sharing ? null : _shareReport,
+                ),
+              ),
+            ),
         ],
+        ),
       ),
     );
   }

@@ -244,7 +244,8 @@ class _ResultScreenState extends State<ResultScreen> {
                               // precision the measurement doesn't have.
                               if (result.isMeasured && result.widthUncertain)
                                 Text(
-                                  'Width is a range — verify with a crack gauge',
+                                  result.resolutionHint ??
+                                      'Width is a range — verify with a crack gauge',
                                   style: AppTextStyles.bodySm
                                       .copyWith(color: AppColors.riskMedium),
                                 ),

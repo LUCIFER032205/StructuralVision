@@ -52,6 +52,11 @@ class ScanResult {
   // range instead of a single number.
   final double? widthMmUpper;
   final bool widthUncertain;
+  /// False when the crack is finer than this photo can resolve anywhere along
+  /// its length — the width is then a ceiling, and a closer shot is the fix.
+  final bool widthResolved;
+  /// Millimetres per image pixel at this framing.
+  final double? mmPerPx;
   final int? crackCount;
   final double? crackAreaRatio;
   final String? error;
@@ -72,6 +77,8 @@ class ScanResult {
     this.residualCapacityPct,
     this.widthMmUpper,
     this.widthUncertain = false,
+    this.widthResolved = true,
+    this.mmPerPx,
     this.crackCount,
     this.crackAreaRatio,
     this.error,
@@ -83,6 +90,17 @@ class ScanResult {
   bool get isDone  => status == 'done';
   bool get isError => status == 'error';
   bool get isMeasured => riskSource == 'measured';
+
+  /// Advice when the crack is finer than the photo can resolve, else null.
+  String? get resolutionHint {
+    if (!isMeasured || widthResolved) return null;
+    final mmpp = mmPerPx;
+    return mmpp == null
+        ? 'Crack is finer than this photo can resolve — re-shoot closer.'
+        : 'Crack is finer than this photo can resolve '
+            '(1 pixel ≈ ${mmpp.toStringAsFixed(2)} mm). Width shown is an upper '
+            'bound — re-shoot closer or zoom in for a real measurement.';
+  }
 
   /// "0.42 mm" or "0.42-2.10 mm" when the two width estimates disagree.
   String? get widthSummary {
@@ -118,6 +136,8 @@ class ScanResult {
         residualCapacityPct: (j['residual_capacity_pct'] as num?)?.toDouble(),
         widthMmUpper:  (j['width_mm_upper'] as num?)?.toDouble(),
         widthUncertain: j['width_uncertain'] as bool? ?? false,
+        widthResolved: j['width_resolved'] as bool? ?? true,
+        mmPerPx: (j['mm_per_px'] as num?)?.toDouble(),
         crackCount:    j['crack_count'] as int?,
         crackAreaRatio:(j['crack_area_ratio'] as num?)?.toDouble(),
         error:         j['error'] as String?,

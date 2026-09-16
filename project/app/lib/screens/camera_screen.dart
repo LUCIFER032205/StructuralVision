@@ -104,9 +104,12 @@ class _CameraScreenState extends State<CameraScreen> {
       final back = cams.firstWhere(
           (c) => c.lensDirection == CameraLensDirection.back,
           orElse: () => cams.first);
-      // high (~1080p): the model infers at 1024px, medium (~720p) upscaled
-      // and could lose hairline cracks before inference.
-      _controller = CameraController(back, ResolutionPreset.high,
+      // ResolutionPreset.high is 1280x720, NOT 1080p as previously commented —
+      // every stored app scan from the 2026-09-15 device test came back
+      // 720x1280, i.e. the model was UPSCALING them to imgsz 1024. veryHigh
+      // is 1920x1080, so hairline cracks survive to inference. Inference cost
+      // is unchanged (still imgsz 1024); only the upload is bigger.
+      _controller = CameraController(back, ResolutionPreset.veryHigh,
           enableAudio: false);
       await _controller!.initialize();
       // Digital zoom: hairline cracks are easier to frame from a distance.

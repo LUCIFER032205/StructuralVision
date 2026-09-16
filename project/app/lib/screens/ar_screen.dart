@@ -10,6 +10,9 @@ import 'package:ar_flutter_plugin_2/models/ar_hittest_result.dart';
 import 'package:ar_flutter_plugin_2/models/ar_node.dart';
 import 'package:ar_flutter_plugin_2/widgets/ar_view.dart';
 import 'package:flutter/material.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'dart:async';
+
 import 'package:vector_math/vector_math_64.dart' as vm;
 
 import '../config.dart';
@@ -43,6 +46,16 @@ class _ArScreenState extends State<ArScreen> with SingleTickerProviderStateMixin
   vm.Vector3? _measureStart;
   double? _measureCm;
   bool _grading = false;
+  // Wall planes: opt-in, because PlaneDetectionConfig.vertical SIGSEGVs in
+  // libarcore_c.so on some devices (Vivo Y200, ARCore 1.54). A SIGSEGV can't
+  // be caught in Dart, so instead a flag is written before switching and
+  // cleared once the session survives; finding it still set on a later launch
+  // means the app died there, and wall mode is disabled for good on this phone.
+  bool _wallMode = false;
+  bool _wallBlocked = false;
+  static const _kWallPending = 'ar_wall_pending';
+  static const _kWallBlocked = 'ar_wall_blocked';
+  Timer? _wallProbe;
   // Starts as the scan's preliminary result; replaced by the backend's
   // standards-graded result (JBDPA / BRE 251) after a measurement. Width
   // conversion and grading live only in backend inference.py.
@@ -75,6 +88,44 @@ class _ArScreenState extends State<ArScreen> with SingleTickerProviderStateMixin
       duration: const Duration(milliseconds: 900),
     )..repeat(reverse: true);
     _pulseAnim = Tween<double>(begin: 0.5, end: 1.0).animate(_pulseCtrl);
+    _loadWallState();
+  }
+
+  Future<void> _loadWallState() async {
+    final prefs = await SharedPreferences.getInstance();
+    var blocked = prefs.getBool(_kWallBlocked) ?? false;
+    if (prefs.getBool(_kWallPending) ?? false) {
+      // Last run enabled wall mode and never got to clear this — it crashed.
+      blocked = true;
+      await prefs.setBool(_kWallBlocked, true);
+      await prefs.remove(_kWallPending);
+    }
+    if (mounted) setState(() => _wallBlocked = blocked);
+  }
+
+  Future<void> _toggleWallMode() async {
+    final prefs = await SharedPreferences.getInstance();
+    if (_wallMode) {
+      _wallProbe?.cancel();
+      await prefs.remove(_kWallPending);
+      setState(() { _wallMode = false; _resetPlacement(); });
+      return;
+    }
+    await prefs.setBool(_kWallPending, true);
+    setState(() { _wallMode = true; _resetPlacement(); });
+    // Survived long enough to be considered safe on this device.
+    _wallProbe = Timer(const Duration(seconds: 8), () async {
+      (await SharedPreferences.getInstance()).remove(_kWallPending);
+    });
+  }
+
+  void _resetPlacement() {
+    // Recreating ARView drops any placed node.
+    _placed = false;
+    _planeFound = false;
+    _measuring = false;
+    _measureStart = null;
+    _measureCm = null;
   }
 
   // Risk-colored pin GLBs generated into backend/static (see marker_*.glb)
@@ -207,6 +258,11 @@ class _ArScreenState extends State<ArScreen> with SingleTickerProviderStateMixin
 
   @override
   void dispose() {
+    _wallProbe?.cancel();
+    if (_wallMode) {
+      // Left cleanly, so this device handles wall planes fine.
+      SharedPreferences.getInstance().then((p) => p.remove(_kWallPending));
+    }
     _pulseCtrl.dispose();
     _session?.dispose();
     super.dispose();
@@ -223,12 +279,21 @@ class _ArScreenState extends State<ArScreen> with SingleTickerProviderStateMixin
         if (!didPop) Navigator.of(context).pop(_result);
       },
       child: Scaffold(
-      // The wall-plane toggle is gone: PlaneDetectionConfig.vertical (and
-      // horizontalAndVertical) SIGSEGV in libarcore_c.so on the Vivo Y200,
-      // confirmed 2026-09-15. AR measuring is floor/slab only; wall, column
-      // and beam cracks are measured by typing a ruler reading on the result
-      // screen, which posts to the same endpoint.
-      appBar: AppBar(title: const Text('AR inspection')),
+      appBar: AppBar(
+        title: const Text('AR inspection'),
+        actions: [
+          if (!_wallBlocked)
+            IconButton(
+              tooltip: _wallMode
+                  ? 'Wall planes on — switch back to flat surfaces'
+                  : 'Also detect wall planes (may not work on every phone)',
+              icon: Icon(_wallMode
+                  ? Icons.border_vertical
+                  : Icons.border_horizontal),
+              onPressed: _toggleWallMode,
+            ),
+        ],
+      ),
       floatingActionButton: FloatingActionButton.extended(
         icon: Icon(_measuring ? Icons.close : Icons.straighten),
         label: Text(_measuring ? 'Cancel' : 'Measure'),
@@ -246,8 +311,15 @@ class _ArScreenState extends State<ArScreen> with SingleTickerProviderStateMixin
       body: Stack(
         children: [
           ARView(
+            key: ValueKey(_wallMode),
             onARViewCreated: _onARViewCreated,
-            planeDetectionConfig: PlaneDetectionConfig.horizontal,
+            // HORIZONTAL already covers every flat surface the phone can sit
+            // square to — desk, table, floor, slab, ceiling — since ARCore
+            // reports all of those as horizontal planes. Walls need VERTICAL,
+            // which is the opt-in above.
+            planeDetectionConfig: _wallMode
+                ? PlaneDetectionConfig.horizontalAndVertical
+                : PlaneDetectionConfig.horizontal,
           ),
           Positioned(
             top: 12,
@@ -275,7 +347,7 @@ class _ArScreenState extends State<ArScreen> with SingleTickerProviderStateMixin
                     if (_measuring)
                       Text(
                           _measureStart == null
-                              ? 'Measure: tap one end of the crack on the floor plane'
+                              ? 'Measure: tap one end of the crack on the detected surface'
                               : 'Measure: tap the other end',
                           style: const TextStyle(
                               color: Colors.white,
@@ -299,7 +371,9 @@ class _ArScreenState extends State<ArScreen> with SingleTickerProviderStateMixin
                           const SizedBox(width: 8),
                           Expanded(
                             child: Text(
-                                'Sweep the phone slowly across the floor — textured areas work best',
+                                _wallMode
+                                    ? 'Sweep across the wall — textured areas work best'
+                                    : 'Sweep across any flat surface — desk, floor or slab',
                                 style: const TextStyle(
                                     color: Colors.white70,
                                     fontStyle: FontStyle.italic)),

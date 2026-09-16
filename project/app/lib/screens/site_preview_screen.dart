@@ -18,7 +18,7 @@ import '../config.dart';
 const _miniatureM = 0.4; // tabletop model
 const _lifeSizeM = 20.0; // ~6-storey block, 6 m footprint
 
-/// AR site preview: place a preset 3D building on a floor/ground plane,
+/// AR site preview: place a preset 3D building on any flat surface,
 /// toggle tabletop miniature vs life-size. Not tied to any scan.
 class SitePreviewScreen extends StatefulWidget {
   const SitePreviewScreen({super.key});
@@ -133,9 +133,9 @@ class _SitePreviewScreenState extends State<SitePreviewScreen> {
   Widget build(BuildContext context) {
     final placed = _anchor != null;
     final hint = !_planeFound
-        ? 'Sweep the phone slowly across the floor or ground'
+        ? 'Sweep the phone slowly across any flat surface — a desk works'
         : !placed
-            ? 'Tap the floor to place the building'
+            ? 'Tap the surface to place the building'
             : _lifeSize
                 ? 'Life-size (20 m) — step back or walk around it'
                 : 'Miniature (40 cm) — walk around it';
@@ -157,7 +157,8 @@ class _SitePreviewScreenState extends State<SitePreviewScreen> {
         children: [
           ARView(
             onARViewCreated: _onARViewCreated,
-            // Floor/ground only: horizontalAndVertical SIGSEGVs on the Vivo Y200.
+            // Any horizontal plane: desk, table, floor or ground. Vertical is
+            // left off here — a building model belongs on a flat surface anyway.
             planeDetectionConfig: PlaneDetectionConfig.horizontal,
           ),
           Positioned(

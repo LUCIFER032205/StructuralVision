@@ -13,7 +13,7 @@ _RISK_COLORS = {"HIGH": (0.86, 0.16, 0.16), "MEDIUM": (1.0, 0.59, 0.0), "LOW": (
 _MAINTENANCE = {"HIGH": "Immediate (0–6 months)", "MEDIUM": "Short-term (6–24 months)", "LOW": "Long-term (2–5 years)"}
 
 def _summary(risk: str, component: str, crack_count: int) -> str:
-    c = component or "structure"
+    c = _COMPONENT_LABEL.get(component, component or "structure").lower()
     if crack_count == 0:
         return f"No significant cracking detected on {c}."
     if risk == "HIGH":
@@ -21,6 +21,16 @@ def _summary(risk: str, component: str, crack_count: int) -> str:
     if risk == "MEDIUM":
         return f"Moderate cracking detected on {c}. Schedule inspection within 6–24 months."
     return f"Minor cracking detected on {c}. Monitor and reinspect within 2–5 years."
+
+
+# Display names for the app's component values (matches the app's picker).
+_COMPONENT_LABEL = {"wall": "Brick wall", "rc_wall": "RC wall", "beam": "Beam",
+                    "column": "Column", "slab": "Slab", "ceiling": "Ceiling"}
+
+
+def _component(scan: dict) -> str:
+    v = scan.get("component_type")
+    return _COMPONENT_LABEL.get(v, v or "Not specified")
 
 
 _STANDARD_REF = {
@@ -50,16 +60,15 @@ def _overlay(image_bytes: bytes, detections: list[dict]) -> Image.Image:
     return img
 
 
-def build_pdf(scan: dict, image_bytes: bytes) -> bytes:
+def _scan_page(c, scan: dict, image_bytes: bytes, title: str) -> None:
+    """Draw one scan onto the current page of canvas [c]."""
     risk = scan.get("risk_level") or "LOW"
     color = _RISK_COLORS.get(risk, (0.5, 0.5, 0.5))
-
-    buf = io.BytesIO()
-    c = canvas.Canvas(buf, pagesize=A4)
     w, h = A4
 
+    c.setFillColorRGB(0, 0, 0)
     c.setFont("Helvetica-Bold", 20)
-    c.drawString(2 * cm, h - 2.5 * cm, "Structural Vision AR — Scan Report")
+    c.drawString(2 * cm, h - 2.5 * cm, title)
     c.setFont("Helvetica", 11)
     c.drawString(2 * cm, h - 3.3 * cm, f"Scan ID: {scan['id']}")
     c.drawString(2 * cm, h - 3.9 * cm, f"Date: {scan.get('created_at', '')[:19].replace('T', ' ')}")
@@ -84,7 +93,7 @@ def build_pdf(scan: dict, image_bytes: bytes) -> bytes:
     c.setFillColorRGB(0, 0, 0)
     c.setFont("Helvetica", 12)
     c.drawString(8 * cm, y + 0.6 * cm,
-                 f"Component: {scan.get('component_type') or '?'}")
+                 f"Component: {_component(scan)}")
     c.drawString(8 * cm, y,
                  f"Cracks: {scan.get('crack_count', 0)}   "
                  f"Area: {(scan.get('crack_area_ratio') or 0) * 100:.2f}%")
@@ -98,6 +107,90 @@ def build_pdf(scan: dict, image_bytes: bytes) -> bytes:
         c.setFont("Helvetica", 8)
         c.drawString(2 * cm, y - 3.8 * cm, _STANDARD_REF[scan["damage_standard"]])
 
+
+_RISK_ORDER = {"LOW": 0, "MEDIUM": 1, "HIGH": 2}
+
+
+def _summary_page(c, scans: list[dict]) -> None:
+    """Front page of a multi-scan report: one row per photo (component, risk,
+    cracks, area) plus the worst risk found across the whole inspection."""
+    w, h = A4
+    worst = max((s.get("risk_level") or "LOW" for s in scans),
+                key=lambda r: _RISK_ORDER.get(r, 0))
+    total_cracks = sum(s.get("crack_count", 0) or 0 for s in scans)
+
+    c.setFillColorRGB(0, 0, 0)
+    c.setFont("Helvetica-Bold", 20)
+    c.drawString(2 * cm, h - 2.5 * cm, "Structural Vision AR — Inspection Report")
+    c.setFont("Helvetica", 11)
+    c.drawString(2 * cm, h - 3.3 * cm,
+                 f"Date: {(scans[0].get('created_at') or '')[:19].replace('T', ' ')}")
+    c.drawString(2 * cm, h - 3.9 * cm,
+                 f"{len(scans)} photos  ·  {total_cracks} cracks detected")
+
+    y = h - 5.6 * cm
+    c.setFillColorRGB(*_RISK_COLORS.get(worst, (0.5, 0.5, 0.5)))
+    c.roundRect(2 * cm, y - 0.4 * cm, 5 * cm, 1.6 * cm, 0.2 * cm, stroke=0, fill=1)
+    c.setFillColorRGB(1, 1, 1)
+    c.setFont("Helvetica-Bold", 22)
+    c.drawCentredString(4.5 * cm, y + 0.1 * cm, worst)
+    c.setFillColorRGB(0, 0, 0)
+    c.setFont("Helvetica", 12)
+    c.drawString(8 * cm, y + 0.3 * cm, "Highest risk across all photos")
+
+    y -= 2.4 * cm
+    c.setFont("Helvetica-Bold", 11)
+    for x, label in ((2 * cm, "#"), (3 * cm, "Component"), (8 * cm, "Risk"),
+                     (11 * cm, "Cracks"), (14 * cm, "Area"), (17 * cm, "Basis")):
+        c.drawString(x, y, label)
+    c.setLineWidth(0.5)
+    c.line(2 * cm, y - 0.2 * cm, w - 2 * cm, y - 0.2 * cm)
+
+    c.setFont("Helvetica", 11)
+    for i, s in enumerate(scans, 1):
+        y -= 0.75 * cm
+        if y < 3 * cm:            # spill onto another page for long inspections
+            c.showPage()
+            c.setFont("Helvetica", 11)
+            y = h - 3 * cm
+        risk = s.get("risk_level") or "LOW"
+        c.setFillColorRGB(0, 0, 0)
+        c.drawString(2 * cm, y, str(i))
+        c.drawString(3 * cm, y, _component(s))
+        c.setFillColorRGB(*_RISK_COLORS.get(risk, (0.5, 0.5, 0.5)))
+        c.drawString(8 * cm, y, risk)
+        c.setFillColorRGB(0, 0, 0)
+        c.drawString(11 * cm, y, str(s.get("crack_count", 0) or 0))
+        c.drawString(14 * cm, y, f"{(s.get('crack_area_ratio') or 0) * 100:.2f}%")
+        c.drawString(17 * cm, y,
+                     "measured" if s.get("risk_source") == "measured" else "prelim.")
+
+    c.setFont("Helvetica-Oblique", 9)
+    c.drawString(2 * cm, 2 * cm,
+                 "Per-photo detail on the following pages. Preliminary risk is "
+                 "image-area based; measure a crack in AR for a standards-based grade.")
+
+
+def build_pdf(scan: dict, image_bytes: bytes) -> bytes:
+    """Single-scan report — one page."""
+    buf = io.BytesIO()
+    c = canvas.Canvas(buf, pagesize=A4)
+    _scan_page(c, scan, image_bytes, "Structural Vision AR — Scan Report")
     c.showPage()
+    c.save()
+    return buf.getvalue()
+
+
+def build_batch_pdf(items: list[tuple[dict, bytes]]) -> bytes:
+    """Whole-inspection report: summary table of every photo and the component
+    it was scanned as, then one detail page per photo."""
+    buf = io.BytesIO()
+    c = canvas.Canvas(buf, pagesize=A4)
+    _summary_page(c, [s for s, _ in items])
+    c.showPage()
+    for i, (scan, image_bytes) in enumerate(items, 1):
+        _scan_page(c, scan, image_bytes,
+                   f"Photo {i} of {len(items)} — {_component(scan)}")
+        c.showPage()
     c.save()
     return buf.getvalue()

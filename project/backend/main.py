@@ -144,6 +144,29 @@ def _overlay_glb(scan_id: str) -> bytes:
     )
 
 
+@app.get("/report")
+async def get_batch_report(ids: str, user_id: str = Depends(current_user)):
+    """One PDF for a whole inspection: ?ids=uuid,uuid,... in capture order.
+    Summary table (component + risk per photo) then a page per photo."""
+    scan_ids = [i for i in ids.split(",") if i]
+    if not scan_ids:
+        raise HTTPException(400, "no scan ids")
+    items = []
+    for sid in scan_ids:
+        scan = db.get_scan(sid, user_id)
+        if scan is None or scan["status"] != "done":
+            continue          # skip failed/pending segments, report the rest
+        try:
+            items.append((scan, db.download_image(sid)))
+        except Exception:
+            continue          # photo never stored; nothing to draw
+    if not items:
+        raise HTTPException(404, "no completed scans with stored photos")
+    pdf = report.build_batch_pdf(items)
+    return Response(pdf, media_type="application/pdf", headers={
+        "Content-Disposition": f'attachment; filename="inspection_{scan_ids[0][:8]}.pdf"'})
+
+
 @app.get("/scan/{scan_id}/report")
 async def get_report(scan_id: str, user_id: str = Depends(current_user)):
     scan = db.get_scan(scan_id, user_id)

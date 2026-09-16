@@ -47,6 +47,11 @@ class ScanResult {
   final String? damageClass; // JBDPA I-IV or BRE 251 category 0-5
   final String? damageRating; // e.g. Moderate, Serviceability
   final double? residualCapacityPct; // JBDPA only
+  // Derived server-side, not stored: the mask-based upper bound on the width,
+  // and whether it disagrees with the photo-based figure enough to report a
+  // range instead of a single number.
+  final double? widthMmUpper;
+  final bool widthUncertain;
   final int? crackCount;
   final double? crackAreaRatio;
   final String? error;
@@ -65,6 +70,8 @@ class ScanResult {
     this.damageClass,
     this.damageRating,
     this.residualCapacityPct,
+    this.widthMmUpper,
+    this.widthUncertain = false,
     this.crackCount,
     this.crackAreaRatio,
     this.error,
@@ -76,6 +83,16 @@ class ScanResult {
   bool get isDone  => status == 'done';
   bool get isError => status == 'error';
   bool get isMeasured => riskSource == 'measured';
+
+  /// "0.42 mm" or "0.42-2.10 mm" when the two width estimates disagree.
+  String? get widthSummary {
+    final w = crackWidthMm;
+    if (w == null) return null;
+    final upper = widthMmUpper;
+    return widthUncertain && upper != null && upper > w
+        ? '${w.toStringAsFixed(2)}–${upper.toStringAsFixed(2)} mm'
+        : '${w.toStringAsFixed(2)} mm';
+  }
 
   /// "JBDPA class II · Moderate · 60% capacity" — null until measured.
   String? get gradeSummary => !isMeasured
@@ -99,6 +116,8 @@ class ScanResult {
         damageClass:   j['damage_class'] as String?,
         damageRating:  j['damage_rating'] as String?,
         residualCapacityPct: (j['residual_capacity_pct'] as num?)?.toDouble(),
+        widthMmUpper:  (j['width_mm_upper'] as num?)?.toDouble(),
+        widthUncertain: j['width_uncertain'] as bool? ?? false,
         crackCount:    j['crack_count'] as int?,
         crackAreaRatio:(j['crack_area_ratio'] as num?)?.toDouble(),
         error:         j['error'] as String?,

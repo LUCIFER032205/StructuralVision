@@ -39,7 +39,6 @@ class _ArScreenState extends State<ArScreen> with SingleTickerProviderStateMixin
   ARAnchor? _placedAnchor;
   late final AnimationController _pulseCtrl;
   late final Animation<double> _pulseAnim;
-  bool _vertical = false;
   late bool _measuring = widget.startMeasuring;
   vm.Vector3? _measureStart;
   double? _measureCm;
@@ -54,6 +53,13 @@ class _ArScreenState extends State<ArScreen> with SingleTickerProviderStateMixin
     try {
       final updated = await scanApi.submitMeasurement(_result.id, lengthCm);
       if (mounted) setState(() => _result = updated);
+    } on MeasurementRejected catch (e) {
+      // The backend checks the implied frame size; taps that land on the floor
+      // behind a wall come back here instead of producing a bogus grade.
+      if (mounted) {
+        setState(() => _measureCm = null);
+        _toast(e.message, seconds: 5);
+      }
     } catch (e) {
       _toast('Could not grade measurement: $e');
     } finally {
@@ -177,7 +183,10 @@ class _ArScreenState extends State<ArScreen> with SingleTickerProviderStateMixin
   }
 
   // The placed overlay quad swallows AR taps (node hits don't reach
-  // onPlaneOrPointTap), so hide it while measuring and restore after.
+  // onPlaneOrPointTap), so it has to come off while measuring. Removing it
+  // left the user with no guide at all, which is half of why measurements
+  // landed on the wrong surface — the on-screen measure guide below replaces
+  // it for the duration.
   Future<void> _setOverlayHidden(bool hidden) async {
     final node = _placedNode;
     if (node == null) return;
@@ -189,10 +198,10 @@ class _ArScreenState extends State<ArScreen> with SingleTickerProviderStateMixin
     }
   }
 
-  void _toast(String msg) {
+  void _toast(String msg, {int seconds = 2}) {
     if (mounted) {
-      ScaffoldMessenger.of(context)
-          .showSnackBar(SnackBar(content: Text(msg), duration: const Duration(seconds: 2)));
+      ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(msg), duration: Duration(seconds: seconds)));
     }
   }
 
@@ -214,24 +223,12 @@ class _ArScreenState extends State<ArScreen> with SingleTickerProviderStateMixin
         if (!didPop) Navigator.of(context).pop(_result);
       },
       child: Scaffold(
-      appBar: AppBar(
-        title: const Text('AR inspection'),
-        actions: [
-          IconButton(
-            tooltip: _vertical ? 'Switch to floor planes' : 'Switch to wall planes',
-            icon: Icon(_vertical ? Icons.border_horizontal : Icons.border_vertical),
-            onPressed: () => setState(() {
-              // Recreating ARView drops any placed node — reset placement.
-              _vertical = !_vertical;
-              _placed = false;
-              _planeFound = false;
-              _measuring = false;
-              _measureStart = null;
-              _measureCm = null;
-            }),
-          ),
-        ],
-      ),
+      // The wall-plane toggle is gone: PlaneDetectionConfig.vertical (and
+      // horizontalAndVertical) SIGSEGV in libarcore_c.so on the Vivo Y200,
+      // confirmed 2026-09-15. AR measuring is floor/slab only; wall, column
+      // and beam cracks are measured by typing a ruler reading on the result
+      // screen, which posts to the same endpoint.
+      appBar: AppBar(title: const Text('AR inspection')),
       floatingActionButton: FloatingActionButton.extended(
         icon: Icon(_measuring ? Icons.close : Icons.straighten),
         label: Text(_measuring ? 'Cancel' : 'Measure'),
@@ -249,14 +246,8 @@ class _ArScreenState extends State<ArScreen> with SingleTickerProviderStateMixin
       body: Stack(
         children: [
           ARView(
-            key: ValueKey(_vertical),
             onARViewCreated: _onARViewCreated,
-            // ponytail: vertical mode kept separate from horizontal —
-            // horizontalAndVertical SIGSEGVs in libarcore_c.so on Vivo Y200
-            // (ARCore 1.54); single-orientation configs to be tested tonight
-            planeDetectionConfig: _vertical
-                ? PlaneDetectionConfig.vertical
-                : PlaneDetectionConfig.horizontal,
+            planeDetectionConfig: PlaneDetectionConfig.horizontal,
           ),
           Positioned(
             top: 12,
@@ -284,7 +275,7 @@ class _ArScreenState extends State<ArScreen> with SingleTickerProviderStateMixin
                     if (_measuring)
                       Text(
                           _measureStart == null
-                              ? 'Measure: tap one end of the crack'
+                              ? 'Measure: tap one end of the crack on the floor plane'
                               : 'Measure: tap the other end',
                           style: const TextStyle(
                               color: Colors.white,
@@ -292,7 +283,7 @@ class _ArScreenState extends State<ArScreen> with SingleTickerProviderStateMixin
                     else if (_measureCm != null)
                       Text(
                           'Measured: ${_measureCm!.toStringAsFixed(1)} cm'
-                          '${_grading ? ' · grading…' : _result.isMeasured ? ' · width ≈ ${_result.crackWidthMm!.toStringAsFixed(1)} mm · ${_result.gradeSummary}' : ''}',
+                          '${_grading ? ' · grading…' : _result.isMeasured ? ' · width ≈ ${_result.widthSummary} · ${_result.gradeSummary}' : ''}',
                           style: const TextStyle(
                               color: Colors.white,
                               fontWeight: FontWeight.bold))
@@ -308,9 +299,7 @@ class _ArScreenState extends State<ArScreen> with SingleTickerProviderStateMixin
                           const SizedBox(width: 8),
                           Expanded(
                             child: Text(
-                                _vertical
-                                    ? 'Sweep the phone slowly across the wall — textured areas work best'
-                                    : 'Sweep the phone slowly across the floor — textured areas work best',
+                                'Sweep the phone slowly across the floor — textured areas work best',
                                 style: const TextStyle(
                                     color: Colors.white70,
                                     fontStyle: FontStyle.italic)),
@@ -330,6 +319,41 @@ class _ArScreenState extends State<ArScreen> with SingleTickerProviderStateMixin
               ),
             ),
           ),
+          // Measuring crosshair: the crack overlay has to come off while
+          // measuring (it swallows taps), so this is the only aiming guide.
+          if (_measuring)
+            Center(
+              child: AnimatedBuilder(
+                animation: _pulseAnim,
+                builder: (_, __) => Opacity(
+                  opacity: _pulseAnim.value,
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const Icon(Icons.add, color: Colors.amber, size: 56,
+                          shadows: [Shadow(blurRadius: 4)]),
+                      const SizedBox(height: 6),
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 10, vertical: 4),
+                        decoration: BoxDecoration(
+                          color: Colors.black54,
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        child: Text(
+                          _measureStart == null
+                              ? 'Aim at one end of the crack'
+                              : 'Now the other end',
+                          style: const TextStyle(
+                              color: Colors.white, fontSize: 13),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+
           // Pulsing crosshair shown when plane found but not yet placed
           if (_planeFound && !_placed && !_measuring)
             Center(

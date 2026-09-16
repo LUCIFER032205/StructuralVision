@@ -1,6 +1,8 @@
 """Measured-risk chain pinned to the published tables. Run: python test_risk.py
 Numbers come from Nakano et al., 13WCEE 2004 Paper 124 (Tables 2-3, R criteria)
 and BRE Digest 251 (categories 0-5)."""
+import numpy as np
+
 from inference import (measured_risk, width_from_measurement,
                        implausible_measurement)
 
@@ -74,6 +76,61 @@ def test_thin_crack_grades_off_the_photo_not_the_bloated_mask():
     # and that is the difference between a bogus HIGH and a real grade
     assert measured_risk(mask_only["width_mm"], "column")["risk_level"] == "HIGH"
     assert measured_risk(with_photo["width_mm"], "column")["damage_class"] == "IV"
+
+
+def _synth_crack(widths, rng, H_per=40, W=301, BASE=200.0, CORE=30.0, PSF=1.2):
+    """A dark crack of known width, convolved with a camera PSF onto a noisy
+    wall. `widths` gives the true width of each band down the image, so a crack
+    can narrow along its length the way real ones do."""
+    x = np.arange(W, dtype=float) - W // 2
+    xs = np.linspace(-(W // 2), W // 2, W * 8)
+    k = np.exp(-0.5 * ((xs[:, None] - x[None, :]) / PSF) ** 2)
+    k /= k.sum(axis=0, keepdims=True)
+    bands = []
+    for w in widths:
+        row = (np.where(np.abs(xs) <= w / 2, CORE, BASE) @ k)
+        bands.append(np.tile(row, (H_per, 1)))
+    img = np.vstack(bands) + rng.normal(0, 2.0, (H_per * len(widths), W))
+    poly = np.array([[W / 2 - 1, 5.0], [W / 2 + 1, 5.0],
+                     [W / 2 + 1, img.shape[0] - 5.0], [W / 2 - 1, img.shape[0] - 5.0]])
+    return np.clip(img, 0, 255), poly
+
+
+def test_fwhm_floors_out_below_three_pixels():
+    """Why equivalent width exists at all: full-width-half-minimum cannot tell
+    a 0.5 px crack from a 1.5 px one — both read the same 3.0 px floor."""
+    from inference import _fwhm, _profile_samples
+    rng = np.random.default_rng(0)
+    reads = []
+    for w in (0.5, 1.5):
+        img, poly = _synth_crack([w] * 4, rng)
+        reads.append(np.median([f for f in (_fwhm(p) for p in
+                                _profile_samples(img, poly, 25)) if f]))
+    assert reads[0] == reads[1] == 3.0, f"expected the 3 px floor, got {reads}"
+
+
+def test_subpixel_width_measured_where_the_crack_has_a_resolved_section():
+    """A crack that narrows along its length: the wide end calibrates the core
+    contrast, so the hairline end can be measured below one pixel."""
+    from inference import profile_width_px
+    rng = np.random.default_rng(1)
+    img, poly = _synth_crack([8.0, 6.0, 4.0, 2.0, 1.0, 0.5], rng)
+    width, resolved = profile_width_px(img, poly)
+    assert resolved is True, "a crack with an 8 px section must count as resolved"
+    # median true width of those bands is 3.0 px
+    assert 1.5 < width < 5.0, f"median width read {width:.2f}, expected around 3"
+
+
+def test_uniformly_hairline_crack_is_flagged_unresolved_not_trusted():
+    """The honest limit. A crack that is sub-pixel along its WHOLE length has no
+    resolved section, so core contrast can only be guessed and the width
+    over-reads. It must come back flagged, so callers show a bound not a value."""
+    from inference import profile_width_px
+    rng = np.random.default_rng(2)
+    img, poly = _synth_crack([0.5] * 6, rng)
+    width, resolved = profile_width_px(img, poly)
+    assert width is not None
+    assert resolved is False, "sub-pixel-everywhere crack must not claim resolved"
 
 
 def test_implausible_length_is_rejected_with_a_reason():

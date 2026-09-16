@@ -142,7 +142,13 @@ async def add_measurement(scan_id: str, m: Measurement, user_id: str = Depends(c
     # The upper bound and uncertainty flag are derived, not stored — report.py
     # recomputes them from the detections and the photo, so no migration.
     return {**db.get_scan(scan_id, user_id),
-            "width_mm_upper": w["width_mm_upper"], "width_uncertain": w["uncertain"]}
+            "width_mm_upper": w["width_mm_upper"],
+            "width_uncertain": w["uncertain"],
+            "width_resolved": w["resolved"],
+            # What one pixel is worth at this framing. A crack finer than about
+            # a pixel can't be measured from this photo however good the maths —
+            # the app turns this into "re-shoot closer" guidance.
+            "mm_per_px": w["mm_per_px"]}
 
 
 @app.get("/scan/{scan_id}/overlay.glb")

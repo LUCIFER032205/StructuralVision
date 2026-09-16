@@ -294,18 +294,12 @@ def implausible_measurement(length_cm: float, length_px: float,
     return None
 
 
-def profile_width_px(gray: np.ndarray, poly: np.ndarray,
-                     half: int = 25, samples: int = 40) -> float | None:
-    """Crack width straight off the photo: the median full-width-half-minimum
-    of the dark trough, sampled perpendicular to the crack's major axis.
-
-    Measured 2026-09-16 against zoomed crops: on a thin crack this reads 4.0 px
-    where the mask says 23.8 px (the mask is ~6x too wide). On a broad spalled
-    region it UNDER-reads instead, because half-minimum of a wide dark patch
-    cuts inside the patch. Hence the caller keeps both numbers.
-    -> width in image pixels, or None when there is no readable trough."""
+def _profile_samples(gray: np.ndarray, poly: np.ndarray,
+                     half: int = 25, samples: int = 40) -> list[np.ndarray]:
+    """Intensity profiles sampled perpendicular to the crack's major axis,
+    walking along its centreline."""
     if len(poly) < 4:
-        return None
+        return []
     centered = poly - poly.mean(axis=0)
     evals, evecs = np.linalg.eigh(np.cov(centered.T))
     major = evecs[:, np.argmax(evals)]
@@ -313,10 +307,10 @@ def profile_width_px(gray: np.ndarray, poly: np.ndarray,
     t = centered @ major
     span = t.max() - t.min()
     if span <= 0:
-        return None
-    widths = []
+        return []
     order = np.argsort(t)
     k = max(2, len(poly) // samples)   # nearest-k, so a sparse polygon still
+    out = []
     for tv in np.linspace(t.min() * 0.9, t.max() * 0.9, samples):
         # tracks a curved crack instead of falling back to a straight axis
         near = order[np.argsort(np.abs(t[order] - tv))[:k]]
@@ -324,13 +318,82 @@ def profile_width_px(gray: np.ndarray, poly: np.ndarray,
         pts = centre + np.outer(np.arange(-half, half + 1), normal)
         xs = np.clip(pts[:, 0].astype(int), 0, gray.shape[1] - 1)
         ys = np.clip(pts[:, 1].astype(int), 0, gray.shape[0] - 1)
-        prof = gray[ys, xs].astype(float)
-        base, trough = np.percentile(prof, 80), prof.min()
-        depth = base - trough
-        if depth < 8:            # flat profile: nothing crack-like here
+        out.append(gray[ys, xs].astype(float))
+    return out
+
+
+# Below this trough depth a profile is flat wall, not crack.
+_MIN_CONTRAST = 8.0
+# Equivalent width carries a small positive bias from rectified noise; measured
+# at +0.15 to +0.20 px across true widths 0.2-16 px on synthetic ground truth.
+_EW_BIAS_PX = 0.17
+# Full width at half minimum cannot resolve below this, whatever the true width
+# (measured: 0.2 px and 2.0 px both read 3.00). Used to tell whether a crack is
+# resolved anywhere along its length.
+_FWHM_FLOOR_PX = 3.0
+
+
+def _fwhm(prof: np.ndarray) -> float | None:
+    base, trough = np.percentile(prof, 80), prof.min()
+    if base - trough < _MIN_CONTRAST:
+        return None
+    return float((prof < base - (base - trough) / 2).sum())
+
+
+def profile_width_px(gray: np.ndarray, poly: np.ndarray,
+                     half: int | None = None, samples: int = 40):
+    """Crack width in image pixels, measured off the photo — accurate below one
+    pixel, which is where hairline cracks live.
+
+    Full-width-half-minimum floors at 3 px: a 0.2 px crack and a 2 px crack both
+    read 3.00, so FWHM cannot measure a hairline at all. This instead uses the
+    EQUIVALENT WIDTH — the integrated intensity deficit divided by the crack's
+    full core contrast. Total darkness stays proportional to true width even when
+    the crack is blurred below one pixel, so the estimate keeps working there.
+
+    The core contrast has to come from the crack's widest section, where it IS
+    resolved; using each sample's own minimum is the trap that makes thin cracks
+    read ~5 px regardless (measured: true 0.2 px -> 4.88 px). Validated on
+    synthetic ground truth: +0.18 px uniform error over true widths 0.2-8 px.
+
+    -> (width_px, resolved) or (None, False). `resolved` is False when the crack
+    is below one pixel everywhere along its length, so the core contrast is a
+    guess and the width should be treated as an upper bound."""
+    if half is None:
+        # The window must clear the crack on BOTH sides or there is no wall left
+        # to measure the deficit against: a fixed +/-25 px sat entirely inside a
+        # wide spalled crack and read 4.7 px for a ~60 px one. Size it from a
+        # first-pass FWHM rather than from the mask, which over-reads thin
+        # cracks badly and would then drag in metres of wall texture.
+        probe = [_fwhm(p) for p in _profile_samples(gray, poly, 25, samples)]
+        probe = [f for f in probe if f]
+        half = int(max(25.0, 2.5 * max(probe))) if probe else 25
+    profs = [p for p in _profile_samples(gray, poly, half, samples)
+             if np.percentile(p, 80) - p.min() >= _MIN_CONTRAST]
+    if not profs:
+        return None, False
+
+    # Darkest sample across the whole crack = its widest, resolved section.
+    core = min(float(p.min()) for p in profs)
+    widest = max((_fwhm(p) or 0.0) for p in profs)
+    resolved = widest > _FWHM_FLOOR_PX
+
+    widths = []
+    for prof in profs:
+        base = float(np.percentile(prof, 80))
+        denom = base - core
+        if denom < _MIN_CONTRAST:
             continue
-        widths.append(int((prof < base - depth / 2).sum()))
-    return float(np.median(widths)) if widths else None
+        edge = max(8, len(prof) // 8)      # tails are wall, whatever the window
+        sigma = float(np.concatenate([prof[:edge], prof[-edge:]]).std())
+        deficit = base - prof
+        # Integrate only what clears the noise floor, or rectified noise inflates
+        # every thin crack.
+        deficit = np.where(deficit > 2 * sigma, deficit, 0.0)
+        widths.append(max(float(deficit.sum()) / denom - _EW_BIAS_PX, 0.0))
+    if not widths:
+        return None, False
+    return float(np.median(widths)), resolved
 
 
 _DISAGREE_FACTOR = 2.0   # beyond this the two width estimates are reported as a range
@@ -361,16 +424,20 @@ def width_from_measurement(length_cm: float, detections: list[dict],
     mm_per_px = length_cm * 10 / length_px
     upper = mask_width_px * mm_per_px
 
-    trough_px = None
+    photo_px, resolved = None, False
     if gray is not None:
         poly = np.asarray(d.get("polygon") or [], dtype=float)
         if len(poly) >= 4:
-            trough_px = profile_width_px(gray, poly)
+            photo_px, resolved = profile_width_px(gray, poly)
 
-    width = trough_px * mm_per_px if trough_px else upper
-    uncertain = bool(trough_px) and upper > _DISAGREE_FACTOR * width
+    width = photo_px * mm_per_px if photo_px else upper
+    # A crack that is sub-pixel along its whole length has no resolved section
+    # to calibrate core contrast from, so its width is a ceiling, not a value.
+    uncertain = bool(photo_px) and (not resolved
+                                    or upper > _DISAGREE_FACTOR * width)
     return {"width_mm": width, "width_mm_upper": max(upper, width),
-            "uncertain": uncertain,
+            "uncertain": uncertain, "resolved": resolved,
+            "mm_per_px": mm_per_px,
             "crack_type": d.get("crack_type") or "structural"}
 
 

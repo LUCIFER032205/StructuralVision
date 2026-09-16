@@ -1,4 +1,4 @@
-# Structural Vision AR — TODO (updated 2026-09-15)
+# Structural Vision AR — TODO (updated 2026-09-16)
 
 Plan to finish: `project/docs/finish_plan.md` (target 2026-09-30).
 
@@ -9,39 +9,6 @@ Plan to finish: `project/docs/finish_plan.md` (target 2026-09-30).
 - Risk thresholds re-fit 0.10/0.25 → 0.03/0.07 on demo_kit (see `project/demo_kit/README.md`).
 - Rescan of all 63 stored app scans with v4: all 8 v2 false alarms (curtains, bag, laptop) are now clean;
   6 remaining false alarms are straight architectural edges (table edge, beam edges, projector, TV).
-
-## Tonight — one round of device testing (Vivo Y200)
-
-Setup: VS Code task `1. Check setup` → `2. Start backend` → (other network) `3. ngrok tunnel`.
-Rebuild the APK first (`APK: build release`); the committed app change is not in the current APK.
-
-### A. Detection on real surfaces — the numbers for the paper
-Scan each, write down: cracks found (y/n), risk shown, correct? (y/n)
-- [ ] 10 real cracks (walls, columns, beams, ceiling) — pick component correctly each time
-- [ ] 10 NON-cracks that look like cracks: table edge, beam/ceiling edge, wall corner, door frame,
-      tile grout, cable on wall, curtain fold, bag seam, projector/TV edge, shadow line
-- [ ] Same real crack scanned as column vs wall vs ceiling → risk should drop column > wall > ceiling
-- [ ] demo_kit high_1 / medium_1 / low_1 off a screen as column → HIGH / MEDIUM / LOW
-
-### B. App flow
-- [ ] Component sheet → capture → result in 1 tap after picking component
-- [ ] Tap a crack → "NN% confident"; weak crack draws thinner/fainter
-- [ ] Pinch-zoom on the result photo
-- [ ] Clean wall → "No cracks detected" empty state
-- [ ] History + batch screens open, old scans load
-
-### C. AR (still untested since the 7/21 build)
-- [ ] Dots appear immediately + "sweep slowly" hint, then tap-to-place
-- [ ] Overlay label risk == result screen risk
-- [ ] Two-tap measure → risk switches to "measured" grade (JBDPA/BRE251)
-- [ ] Vertical-plane toggle (may SIGSEGV — note it if so)
-
-### D. Site preview (3D building) — only in an APK built after commit 9ebf26e
-- [ ] Building icon on camera screen → floor dots → tap → tower appears (~40 cm)
-- [ ] "Life-size" → 20 m tower; "Miniature" → back; refresh icon → place again
-- [ ] Back to camera → scan → crack AR still works (camera handover)
-
-Save failures as screenshots + scan id. Anything wrong gets fixed tomorrow, before new features.
 
 ## Tonight's test findings (2026-09-15, backend log + scans 91d83184 → 4e3e8cb0)
 - Non-cracks: 11/12 correct. 1 false alarm = overhead cable across a wall (44013866, conf 0.59) —
@@ -68,17 +35,108 @@ Save failures as screenshots + scan id. Anything wrong gets fixed tomorrow, befo
   /scan/{id}/measurement endpoint; keep AR Measure for floor/slab cracks only. (Check first: update
   "Google Play Services for AR" and retry once; grab `adb logcat` over USB if it still crashes.)
 
-## Tomorrow — one build with both pending changes
-- Straight-edge false-alarm filter (NOT applied yet): drop a detection whose mask fills > 0.6 of its
-  min-area rotated rect (table/beam/TV edges fill it, wiggly cracks don't). Eval 2026-09-15:
-  eval200 199/200 either way; SDNET FA 2→1; app photos FA 6/28→2/28, app cracks 9/9 kept.
-  Cutoff was picked on those same app photos → validate on tonight's 10 non-crack photos first.
-- Then one APK with filter + site preview (commit 9ebf26e), re-test sections A and D.
+## Done 2026-09-16 (all code landed; nothing left but the test session)
 
-## After testing (only if tonight is clean)
-- Paper + `model_evolution_report.md`: v2 → v3 rejected → v4, image-level accuracy, NaN investigation,
-  dataset 9,816 images, duplicate-mask + real-photo false-alarm findings.
-- Video scan mode, plugin fork / auto-place, gap → drip mapping: cut unless the paper is done early.
+**Measurement chain — root cause was the mask, not the taps.** Both absurd readings
+reproduce exactly from plausible tap distances (50 cm, 14.7 cm) using the stored mask
+width. YOLOv8-seg draws mask prototypes at imgsz/4, so the thinnest mask it can emit is
+~10 image px on a 2560 px photo; real crack masks measured a median of 56 px. On a 1.5 m
+hairline that is ~280x the true width.
+- `inference.profile_width_px()` measures the crack off the photo (median full-width-
+  half-minimum of the dark trough, sampled perpendicular to the crack). Validated against
+  zoomed crops: 4.0 px on a thin crack where the mask says 23.8 px.
+- It under-reads on broad spalled patches, so both figures are kept: the trough grades,
+  the mask is the upper bound, and past 2x disagreement the width prints as a RANGE with
+  a "verify with a crack gauge" note instead of a false-precision number.
+- `implausible_measurement()` rejects a two-tap distance implying a frame outside
+  5 cm - 15 m, with the reason shown in the app (typed `MeasurementRejected`).
+
+**AR surfaces.** Desks and tables always worked — ARCore reports desk/table/floor/slab/
+ceiling all as horizontal planes. Only the copy said "floor", which is why the demo looked
+floor-only. Reworded. Wall planes are back as an opt-in with a crash guard: a flag is set
+before switching to horizontalAndVertical and cleared once the session survives 8 s or
+exits cleanly; finding it still set on a later launch means the app died there and wall
+mode is hidden permanently on that device.
+
+**Capture resolution.** `ResolutionPreset.high` is 1280x720, not 1080p as the old comment
+claimed — every 09-15 scan came back 720x1280, so the model was UPSCALING to imgsz 1024.
+Now `veryHigh` (1920x1080). Inference cost unchanged.
+
+**False alarms — elongation filter shipped, edge filter dropped.** On 19 labelled
+non-crack photos from the 09-15 session:
+
+| filter | false alarms | cracks found |
+|---|---|---|
+| none (before) | 2/19 | 13/13 |
+| **min elongation >= 4 (shipped)** | **1/19** | **13/13** |
+| fill <= 0.6 (was pending) | 1/19 | 12/13 — loses a crack |
+| tiled inference | 8/19 | 13/13 |
+
+Blobs measured 1.1-1.9, thinnest real crack 25.2; cutoff flat from 2 to 15. Costs nothing
+on eval200 (199/200 kept) or SDNET (0 FA), and demo_kit calibration is unchanged.
+
+**Tiling is ruled out.** Its only win was `demo_kit/missed.jpeg` (0 detections full-frame
+-> the band crack at 0.77 tiled). On the labelled negatives it quadruples false alarms
+(2 -> 8 of 19) while gaining nothing, because full-frame already found all 13 cracks.
+Six extra false alarms to buy one crack is a bad trade.
+
+**imgsz is ruled out.** 1024/1280/1600 all give 199/200 on eval200; 1600 adds a false
+alarm and is 2.6x slower.
+
+**Whole-inspection report.** `GET /report?ids=...` — summary table (component, risk,
+cracks, area, worst risk overall) then a page per photo. Covers video burst, multi-capture
+and gallery upload. Every id gets a row, including failed/pending ones.
+
+**Camera.** Video burst kept; multi-capture added beside it (manual shutter, component
+re-pickable between shots). Pinch-zoom + zoom slider. Component sheet is a full-width
+list. Batch list no longer cut off by the nav bar.
+
+## Saturday — one test session, everything in one APK
+
+Setup: `1. Check setup` -> `2. Start backend` -> (other network) `3. ngrok tunnel`.
+APK is already built and copied to `backend/static/`.
+
+### A. The four UI changes
+- [ ] Component sheet: full-width rows, no wrapped labels, tick on the current pick
+- [ ] Pinch-zoom + zoom slider on the camera
+- [ ] Video burst still works exactly as before (8 shots, REC badge)
+- [ ] Multi: shutter queues, component chip changeable between shots, thumbnails show
+      each photo's component, tap to drop one, tick to analyze
+- [ ] Batch list: last card fully visible above the nav bar
+
+### B. Report covers everything
+- [ ] Video burst -> "Share full report" -> summary table lists every photo + component
+- [ ] Multi with 3 different components -> all three named correctly in the PDF
+- [ ] Kill the backend mid-burst: failed segments still get rows marked "failed",
+      and the button stays locked until all segments settle
+
+### C. Measurement (the numbers that were wrong)
+- [ ] Floor/slab crack -> Measure in AR -> width is sane, no 18 mm hairlines
+- [ ] Wall crack -> "Enter length" with a tape -> same grade path
+- [ ] Deliberately tap the floor behind a wall crack -> rejected with a reason, no grade
+- [ ] A hairline -> width shows as a RANGE + "verify with a crack gauge"
+- [ ] Measuring crosshair visible while measuring
+
+### D. AR surfaces
+- [ ] Place on a DESK (this is the demo case) — should just work
+- [ ] Place on the floor
+- [ ] Wall-plane toggle: if it crashes, reopen the app — the toggle should be GONE
+      and never come back. That is the guard working, not a bug.
+- [ ] Site preview: building places on a desk
+
+### E. Detection
+- [ ] Rescan the perforated cabinet panel -> no more blob false alarms
+- [ ] Rescan the overhead cable -> STILL a false alarm, expected, not a regression
+- [ ] A/B the resolution change: same crack, old APK vs new, see if 1080p finds more
+- [ ] `demo_kit/missed.jpeg` off a screen -> still missed at conf 0.4, expected
+
+## Still open after Saturday
+- **Paper + `model_evolution_report.md`** — the only graded deliverable, untouched.
+  Numbers to write up: v2 -> v3 rejected -> v4, image-level accuracy, the NaN
+  investigation, 9,816 images, and now the mask-width finding (a genuine methods
+  contribution: segmentation masks cannot measure hairline crack width).
+- Overhead-cable false alarm — elongation can't catch it, needs a different idea.
+- `lib/screens/_backup/` — 5 dead files, the only `flutter analyze` errors in the repo.
 
 ## Reference
 - Run backend: `cd project/backend && /c/Python314/python -m uvicorn main:app --host 0.0.0.0`

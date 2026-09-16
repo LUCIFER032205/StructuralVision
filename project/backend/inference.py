@@ -45,7 +45,7 @@ def detect_cracks(img: Image.Image):
     # iou 0.45 (default 0.7): v4 emits a second mask on the same long crack at
     # bbox IoU 0.49-0.62 (scans 0310b12e, d5b767c0, 1e2d59fc), doubling area ratio
     # and the risk. Max confidence per image is unchanged, so accuracy is too.
-    res = yolo.predict(img, imgsz=1024, conf=0.4, iou=0.45, verbose=False)[0]
+    res = yolo.predict(img, imgsz=INFER_IMGSZ, conf=0.4, iou=0.45, verbose=False)[0]
     out = []
     if res.masks is None:
         return out
@@ -54,15 +54,35 @@ def detect_cracks(img: Image.Image):
     for i, poly in enumerate(polys):
         conf = float(boxes.conf[i])
         x1, y1, x2, y2 = (float(v) for v in boxes.xyxy[i])
+        dims = _crack_dimensions(poly)
+        if _too_stubby(dims):
+            continue
         out.append({
             "bbox": [x1, y1, x2, y2],
             "polygon": poly.tolist(),
             "confidence": conf,
             "area_ratio": float(_polygon_area(poly) / img_area),
             "crack_type": _classify_crack_type(poly, (x1, y1, x2, y2)),
-            **_crack_dimensions(poly),
+            **dims,
         })
     return out
+
+
+# Cracks are long and thin; round blobs are not. Measured 2026-09-16 on the
+# 2026-09-15 device-test photos: the perforated-cabinet false alarm (scan
+# cba3bd4f) produced three detections at elongation 1.1, 1.2 and 1.9, while
+# the thinnest real crack in the set sat at 25.2 — over an order of magnitude
+# clear. The cutoff is flat anywhere from 2 to 15, so 4.0 is not fitted to
+# that data. Costs nothing on the benchmarks: eval200 keeps 199/200 cracks and
+# SDNET's 200 negatives stay at 0 false alarms, both unchanged.
+# Does NOT catch the overhead-cable false alarm (scan 44013866, elongation
+# 34.5) — a cable is genuinely long and thin. That one needs a different idea.
+MIN_ELONGATION = 4.0
+
+
+def _too_stubby(dims: dict) -> bool:
+    w = dims.get("width_px") or 0.0
+    return w > 0 and (dims.get("length_px") or 0.0) / w < MIN_ELONGATION
 
 
 def _crack_dimensions(poly: np.ndarray) -> dict:

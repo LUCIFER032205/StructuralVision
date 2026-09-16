@@ -109,15 +109,25 @@ def _scan_page(c, scan: dict, image_bytes: bytes, title: str) -> None:
 
 
 _RISK_ORDER = {"LOW": 0, "MEDIUM": 1, "HIGH": 2}
+_NOT_ANALYZED = {"error": "failed", "pending": "pending", "missing": "not found",
+                 "no_photo": "photo lost"}
+
+
+def _is_done(scan: dict) -> bool:
+    return scan.get("status", "done") == "done"
 
 
 def _summary_page(c, scans: list[dict]) -> None:
     """Front page of a multi-scan report: one row per photo (component, risk,
-    cracks, area) plus the worst risk found across the whole inspection."""
+    cracks, area) plus the worst risk found across the whole inspection.
+    Every captured photo gets a row, including ones that failed to analyze —
+    a report that silently drops them would under-count the inspection."""
     w, h = A4
-    worst = max((s.get("risk_level") or "LOW" for s in scans),
-                key=lambda r: _RISK_ORDER.get(r, 0))
-    total_cracks = sum(s.get("crack_count", 0) or 0 for s in scans)
+    graded = [s for s in scans if _is_done(s)]
+    worst = max((s.get("risk_level") or "LOW" for s in graded),
+                key=lambda r: _RISK_ORDER.get(r, 0)) if graded else "LOW"
+    total_cracks = sum(s.get("crack_count", 0) or 0 for s in graded)
+    failed = len(scans) - len(graded)
 
     c.setFillColorRGB(0, 0, 0)
     c.setFont("Helvetica-Bold", 20)
@@ -125,8 +135,10 @@ def _summary_page(c, scans: list[dict]) -> None:
     c.setFont("Helvetica", 11)
     c.drawString(2 * cm, h - 3.3 * cm,
                  f"Date: {(scans[0].get('created_at') or '')[:19].replace('T', ' ')}")
-    c.drawString(2 * cm, h - 3.9 * cm,
-                 f"{len(scans)} photos  ·  {total_cracks} cracks detected")
+    line = f"{len(scans)} photos  ·  {total_cracks} cracks detected"
+    if failed:
+        line += f"  ·  {failed} not analyzed"
+    c.drawString(2 * cm, h - 3.9 * cm, line)
 
     y = h - 5.6 * cm
     c.setFillColorRGB(*_RISK_COLORS.get(worst, (0.5, 0.5, 0.5)))
@@ -153,10 +165,17 @@ def _summary_page(c, scans: list[dict]) -> None:
             c.showPage()
             c.setFont("Helvetica", 11)
             y = h - 3 * cm
-        risk = s.get("risk_level") or "LOW"
         c.setFillColorRGB(0, 0, 0)
         c.drawString(2 * cm, y, str(i))
         c.drawString(3 * cm, y, _component(s))
+        if not _is_done(s):
+            c.setFillColorRGB(0.45, 0.45, 0.45)
+            c.drawString(8 * cm, y, "n/a")
+            c.drawString(11 * cm, y, "—")
+            c.drawString(14 * cm, y, "—")
+            c.drawString(17 * cm, y, _NOT_ANALYZED.get(s.get("status"), "failed"))
+            continue
+        risk = s.get("risk_level") or "LOW"
         c.setFillColorRGB(*_RISK_COLORS.get(risk, (0.5, 0.5, 0.5)))
         c.drawString(8 * cm, y, risk)
         c.setFillColorRGB(0, 0, 0)
@@ -165,6 +184,7 @@ def _summary_page(c, scans: list[dict]) -> None:
         c.drawString(17 * cm, y,
                      "measured" if s.get("risk_source") == "measured" else "prelim.")
 
+    c.setFillColorRGB(0, 0, 0)   # last row may have left the fill grey
     c.setFont("Helvetica-Oblique", 9)
     c.drawString(2 * cm, 2 * cm,
                  "Per-photo detail on the following pages. Preliminary risk is "
@@ -181,14 +201,19 @@ def build_pdf(scan: dict, image_bytes: bytes) -> bytes:
     return buf.getvalue()
 
 
-def build_batch_pdf(items: list[tuple[dict, bytes]]) -> bytes:
-    """Whole-inspection report: summary table of every photo and the component
-    it was scanned as, then one detail page per photo."""
+def build_batch_pdf(items: list[tuple[dict, bytes | None]]) -> bytes:
+    """Whole-inspection report: summary table of every photo captured and the
+    component it was scanned as, then one detail page per photo.
+
+    An entry with image_bytes None (analysis failed, or the photo was never
+    stored) still gets its summary row — it just has no detail page to draw."""
     buf = io.BytesIO()
     c = canvas.Canvas(buf, pagesize=A4)
     _summary_page(c, [s for s, _ in items])
     c.showPage()
     for i, (scan, image_bytes) in enumerate(items, 1):
+        if image_bytes is None or not _is_done(scan):
+            continue
         _scan_page(c, scan, image_bytes,
                    f"Photo {i} of {len(items)} — {_component(scan)}")
         c.showPage()

@@ -56,19 +56,18 @@ class _BatchScreenState extends State<BatchScreen> {
     }
   }
 
-  /// One PDF for the whole session: summary table of every photo and the
-  /// component it was scanned as, then a detail page each.
+  /// One PDF for the whole session: summary table of every photo captured —
+  /// video burst, multi-capture or gallery upload alike — and the component
+  /// each was scanned as, then a detail page each. Every id goes up, including
+  /// segments that failed, so the report can't quietly under-count the job.
   Future<void> _shareReport() async {
-    final ids = [
-      for (var i = 0; i < _results.length; i++)
-        if (_results[i]?.isDone ?? false) widget.scanIds[i]
-    ];
-    if (ids.isEmpty || _sharing) return;
+    if (_sharing) return;
     setState(() => _sharing = true);
     try {
-      final pdf = await scanApi.getBatchReport(ids);
+      final pdf = await scanApi.getBatchReport(widget.scanIds);
       await Printing.sharePdf(
-          bytes: pdf, filename: 'inspection_${ids.first.substring(0, 8)}.pdf');
+          bytes: pdf,
+          filename: 'inspection_${widget.scanIds.first.substring(0, 8)}.pdf');
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context)
@@ -85,6 +84,9 @@ class _BatchScreenState extends State<BatchScreen> {
     final total = _results.length;
     final progress = total == 0 ? 0.0 : done / total;
     final ready = _results.where((r) => r?.isDone ?? false).length;
+    // Wait for every segment to settle before offering the report, so a tap
+    // mid-analysis can't hand over a partial inspection.
+    final allSettled = done == total;
 
     return Scaffold(
       appBar: AppBar(
@@ -149,26 +151,30 @@ class _BatchScreenState extends State<BatchScreen> {
             ),
           ),
           // ── Combined report ────────────────────────────────────────────
-          if (ready > 0)
-            Padding(
-              padding: const EdgeInsets.fromLTRB(
-                  kPagePadding, 0, kPagePadding, 12),
-              child: SizedBox(
-                  width: double.infinity,
-                  child: FilledButton.icon(
-                    icon: _sharing
-                        ? const SizedBox(
-                            width: 16,
-                            height: 16,
-                            child: CircularProgressIndicator(strokeWidth: 2))
-                        : const Icon(Icons.picture_as_pdf, size: 18),
-                    label: Text(_sharing
-                        ? 'Building report…'
-                        : 'Share full report ($ready photos)'),
-                  onPressed: _sharing ? null : _shareReport,
-                ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(
+                kPagePadding, 0, kPagePadding, 12),
+            child: SizedBox(
+              width: double.infinity,
+              child: FilledButton.icon(
+                icon: _sharing
+                    ? const SizedBox(
+                        width: 16,
+                        height: 16,
+                        child: CircularProgressIndicator(strokeWidth: 2))
+                    : const Icon(Icons.picture_as_pdf, size: 18),
+                label: Text(_sharing
+                    ? 'Building report…'
+                    : !allSettled
+                        ? 'Report ready when all $total are analyzed'
+                        : ready == total
+                            ? 'Share full report ($total photos)'
+                            : 'Share full report ($ready of $total analyzed)'),
+                onPressed:
+                    (_sharing || !allSettled || ready == 0) ? null : _shareReport,
               ),
             ),
+          ),
         ],
         ),
       ),

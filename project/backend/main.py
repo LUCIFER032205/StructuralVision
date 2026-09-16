@@ -151,16 +151,22 @@ async def get_batch_report(ids: str, user_id: str = Depends(current_user)):
     scan_ids = [i for i in ids.split(",") if i]
     if not scan_ids:
         raise HTTPException(400, "no scan ids")
+    # Every captured photo gets a row, even a failed or still-pending one:
+    # a report that silently drops them would under-count the inspection.
     items = []
     for sid in scan_ids:
         scan = db.get_scan(sid, user_id)
-        if scan is None or scan["status"] != "done":
-            continue          # skip failed/pending segments, report the rest
+        if scan is None:
+            items.append(({"id": sid, "status": "missing"}, None))
+            continue
+        if scan["status"] != "done":
+            items.append((scan, None))
+            continue
         try:
             items.append((scan, db.download_image(sid)))
         except Exception:
-            continue          # photo never stored; nothing to draw
-    if not items:
+            items.append(({**scan, "status": "no_photo"}, None))
+    if not any(img is not None for _, img in items):
         raise HTTPException(404, "no completed scans with stored photos")
     pdf = report.build_batch_pdf(items)
     return Response(pdf, media_type="application/pdf", headers={

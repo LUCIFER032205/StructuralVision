@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -20,7 +22,10 @@ class CameraScreen extends StatefulWidget {
   State<CameraScreen> createState() => _CameraScreenState();
 }
 
-const _multiMaxShots = 12;
+const _burstStartDelay = Duration(seconds: 1);
+const _burstInterval   = Duration(milliseconds: 2500);
+const _burstMaxShots   = 8;
+const _multiMaxShots   = 12;
 
 /// One queued shot in multi-capture mode: the photo plus the component the
 /// user had selected when it was taken, so one session can mix wall, column…
@@ -34,6 +39,12 @@ class _CameraScreenState extends State<CameraScreen> {
   CameraController? _controller;
   String? _status;
   String? _initError;
+  // Two ways to collect several photos, deliberately different:
+  //   burst  — timed auto-capture, one component for the whole sweep
+  //   multi  — manual shutter, component re-pickable between shots
+  Timer?  _burstTimer;
+  List<Uint8List>? _burstShots;
+  String? _burstComponent;
   List<_Shot>? _shots;   // non-null while multi-capture is on
   double _zoom = 1.0;
   double _zoomMin = 1.0, _zoomMax = 1.0;
@@ -112,7 +123,10 @@ class _CameraScreenState extends State<CameraScreen> {
   /// is selected right now and stays on the camera; otherwise it scans at once.
   Future<void> _scan() async {
     final ctrl = _controller;
-    if (ctrl == null || !ctrl.value.isInitialized || _status != null) return;
+    if (ctrl == null || !ctrl.value.isInitialized ||
+        _status != null || _burstShots != null) {
+      return;
+    }
 
     final component = await _ensureComponent();
     if (component == null || !mounted) return; // user dismissed
@@ -141,7 +155,7 @@ class _CameraScreenState extends State<CameraScreen> {
   }
 
   Future<void> _pickFromGallery() async {
-    if (_status != null || _shots != null) return;
+    if (_status != null || _shots != null || _burstShots != null) return;
     try {
       final picked = await ImagePicker().pickMultiImage();
       if (picked.isEmpty || !mounted) return;
@@ -169,11 +183,81 @@ class _CameraScreenState extends State<CameraScreen> {
     }
   }
 
+  // ── Video burst: timed auto-capture, one component for the sweep ────────
+  Future<void> _toggleRecording() async {
+    if (_burstShots != null) return _stopBurst();
+    final ctrl = _controller;
+    if (ctrl == null || !ctrl.value.isInitialized ||
+        _status != null || _shots != null) {
+      return;
+    }
+
+    // All burst frames inherit the current component
+    final component = await _ensureComponent();
+    if (component == null || !mounted) return;
+    HapticFeedback.mediumImpact();
+
+    setState(() {
+      _burstShots     = [];
+      _burstComponent = component;
+    });
+    _burstTimer = Timer(_burstStartDelay, () {
+      _takeBurstShot();
+      _burstTimer = Timer.periodic(_burstInterval, (_) => _takeBurstShot());
+    });
+  }
+
+  Future<void> _takeBurstShot() async {
+    final ctrl  = _controller;
+    final shots = _burstShots;
+    if (ctrl == null || !ctrl.value.isInitialized || shots == null) {
+      _cancelBurst();
+      return;
+    }
+    try {
+      final shot = await ctrl.takePicture();
+      shots.add(await shot.readAsBytes());
+      if (mounted) setState(() {});
+      if (shots.length >= _burstMaxShots) await _stopBurst();
+    } catch (_) {}
+  }
+
+  Future<void> _stopBurst() async {
+    final shots     = _burstShots;
+    final component = _burstComponent;
+    _cancelBurst();
+    if (shots == null || shots.isEmpty) return;
+    try {
+      setState(() => _status = 'Uploading ${shots.length} images…');
+      final ids = <String>[];
+      for (final s in shots) {
+        ids.add(await scanApi.submitScan(s, componentType: component));
+      }
+      await _openBatch(ids);
+    } catch (e) {
+      _showError(e);
+    } finally {
+      if (mounted) setState(() => _status = null);
+    }
+  }
+
+  void _cancelBurst() {
+    _burstTimer?.cancel();
+    _burstTimer     = null;
+    _burstShots     = null;
+    _burstComponent = null;
+    if (mounted) setState(() {});
+  }
+
+  // ── Multi-capture: manual shutter, component re-pickable per shot ───────
   /// Enter multi-capture, or finish it and analyze the queue.
   Future<void> _toggleMulti() async {
     if (_shots == null) {
       final ctrl = _controller;
-      if (ctrl == null || !ctrl.value.isInitialized || _status != null) return;
+      if (ctrl == null || !ctrl.value.isInitialized ||
+          _status != null || _burstShots != null) {
+        return;
+      }
       HapticFeedback.mediumImpact();
       setState(() => _shots = []);
       return;
@@ -253,15 +337,17 @@ class _CameraScreenState extends State<CameraScreen> {
 
   @override
   void dispose() {
+    _burstTimer?.cancel();
     _controller?.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    final ctrl    = _controller;
-    final shots   = _shots;
-    final isMulti = shots != null;
+    final ctrl        = _controller;
+    final shots       = _shots;
+    final isMulti     = shots != null;
+    final isRecording = _burstShots != null;
 
     return Scaffold(
       backgroundColor: Colors.black,
@@ -314,12 +400,12 @@ class _CameraScreenState extends State<CameraScreen> {
                     ),
 
                     // ── Viewfinder overlay ────────────────────────────────
-                    if (_status == null) const _ViewfinderGuide(),
+                    if (_status == null && !isRecording) const _ViewfinderGuide(),
 
                     // ── Component chip (what's being scanned) ─────────────
                     // Stays tappable in multi-capture: each photo is queued
                     // with whatever component is selected at that moment.
-                    if (_status == null)
+                    if (_status == null && !isRecording)
                       Positioned(
                         top: MediaQuery.of(context).padding.top + 64,
                         left: 0,
@@ -332,6 +418,16 @@ class _CameraScreenState extends State<CameraScreen> {
                             onTap: _pickComponent,
                           ),
                         ),
+                      ),
+
+                    // ── REC badge (video burst) ───────────────────────────
+                    if (isRecording)
+                      Positioned(
+                        top: MediaQuery.of(context).padding.top + 64,
+                        left: 0,
+                        right: 0,
+                        child: Center(
+                            child: _RecBadge(count: _burstShots!.length)),
                       ),
 
                     // ── Zoom control ──────────────────────────────────────
@@ -369,10 +465,12 @@ class _CameraScreenState extends State<CameraScreen> {
                       bottom: 0,
                       child: _ControlBar(
                         multiCount: isMulti ? shots.length : null,
+                        isRecording: isRecording,
                         isBusy: _status != null,
                         onGallery: _pickFromGallery,
                         onCapture: _scan,
                         onMulti: _toggleMulti,
+                        onRecord: _toggleRecording,
                       ),
                     ),
                   ],
@@ -447,6 +545,67 @@ class _CornerPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(_) => false;
+}
+
+class _RecBadge extends StatelessWidget {
+  final int count;
+  const _RecBadge({required this.count});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+      decoration: BoxDecoration(
+        color: Colors.black.withValues(alpha: 0.65),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: AppColors.danger.withValues(alpha: 0.6)),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const _PulsingDot(),
+          const SizedBox(width: 8),
+          Text(
+            'REC · $count / $_burstMaxShots',
+            style: AppTextStyles.bodyMd.copyWith(
+                color: Colors.white, fontWeight: FontWeight.w600),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _PulsingDot extends StatefulWidget {
+  const _PulsingDot();
+
+  @override
+  State<_PulsingDot> createState() => _PulsingDotState();
+}
+
+class _PulsingDotState extends State<_PulsingDot>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _ac = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 800),
+  )..repeat(reverse: true);
+
+  @override
+  void dispose() { _ac.dispose(); super.dispose(); }
+
+  @override
+  Widget build(BuildContext context) {
+    return FadeTransition(
+      opacity: _ac,
+      child: Container(
+        width: 8, height: 8,
+        decoration: const BoxDecoration(
+          color: AppColors.danger,
+          shape: BoxShape.circle,
+        ),
+      ),
+    );
+  }
 }
 
 /// Thumbnails of the photos queued in multi-capture, each tagged with the
@@ -610,24 +769,32 @@ class _ProcessingOverlay extends StatelessWidget {
 class _ControlBar extends StatelessWidget {
   /// null = single-shot mode; otherwise how many photos are queued.
   final int? multiCount;
+  final bool isRecording;
   final bool isBusy;
   final VoidCallback onGallery;
   final VoidCallback onCapture;
   final VoidCallback onMulti;
+  final VoidCallback onRecord;
 
   const _ControlBar({
     required this.multiCount,
+    required this.isRecording,
     required this.isBusy,
     required this.onGallery,
     required this.onCapture,
     required this.onMulti,
+    required this.onRecord,
   });
 
   @override
   Widget build(BuildContext context) {
     final bottom = MediaQuery.of(context).padding.bottom;
+    // One mode at a time: while a burst is running, multi is locked out, and
+    // vice versa, so the two never fight over the shutter.
+    final busyOrMulti  = isBusy || multiCount != null;
+    final busyOrRec    = isBusy || isRecording;
     return Container(
-      padding: EdgeInsets.fromLTRB(24, 20, 24, 20 + bottom),
+      padding: EdgeInsets.fromLTRB(12, 20, 12, 20 + bottom),
       decoration: BoxDecoration(
         gradient: LinearGradient(
           begin: Alignment.bottomCenter,
@@ -645,13 +812,10 @@ class _ControlBar extends StatelessWidget {
           _SideButton(
             icon: Icons.photo_library_outlined,
             label: 'Gallery',
-            onTap: isBusy ? null : onGallery,
+            onTap: (busyOrRec || multiCount != null) ? null : onGallery,
           ),
 
-          // Shutter
-          _ShutterButton(onTap: isBusy ? null : onCapture),
-
-          // Multi-capture: start queueing, or finish and analyze the queue
+          // Multi-capture: queue photos, re-picking the component between shots
           _SideButton(
             icon: multiCount == null
                 ? Icons.burst_mode_outlined
@@ -661,8 +825,19 @@ class _ControlBar extends StatelessWidget {
                 : multiCount == 0
                     ? 'Cancel'
                     : 'Analyze $multiCount',
-            accent: multiCount != null,
-            onTap: isBusy ? null : onMulti,
+            activeColor: multiCount != null ? AppColors.accent : null,
+            onTap: busyOrRec ? null : onMulti,
+          ),
+
+          // Shutter
+          _ShutterButton(onTap: busyOrRec ? null : onCapture),
+
+          // Video burst: timed sweep, one component for all frames
+          _SideButton(
+            icon: isRecording ? Icons.stop_rounded : Icons.videocam_outlined,
+            label: isRecording ? 'Stop' : 'Video',
+            activeColor: isRecording ? AppColors.danger : null,
+            onTap: busyOrMulti ? null : onRecord,
           ),
         ],
       ),
@@ -757,13 +932,15 @@ class _ShutterButton extends StatelessWidget {
 class _SideButton extends StatelessWidget {
   final IconData icon;
   final String   label;
-  final bool     accent;
+  /// Non-null when this button's mode is active — accent for multi-capture,
+  /// danger for a running video burst.
+  final Color?   activeColor;
   final VoidCallback? onTap;
 
   const _SideButton({
     required this.icon,
     required this.label,
-    this.accent = false,
+    this.activeColor,
     required this.onTap,
   });
 
@@ -771,9 +948,7 @@ class _SideButton extends StatelessWidget {
   Widget build(BuildContext context) {
     final color = onTap == null
         ? AppColors.textMuted
-        : accent
-            ? AppColors.accent
-            : Colors.white;
+        : activeColor ?? Colors.white;
     return Semantics(
       button: true,
       enabled: onTap != null,
@@ -799,15 +974,23 @@ class _SideButton extends StatelessWidget {
                   shape: BoxShape.circle,
                   color: Colors.white.withValues(alpha: 0.12),
                   border: Border.all(
-                      color: accent
-                          ? AppColors.accent.withValues(alpha: 0.6)
-                          : Colors.white.withValues(alpha: 0.2)),
+                      color: activeColor?.withValues(alpha: 0.6) ??
+                          Colors.white.withValues(alpha: 0.2)),
                 ),
                 child: Icon(icon, color: color, size: 24),
               ),
               const SizedBox(height: 6),
-              Text(label,
-                  style: AppTextStyles.bodySm.copyWith(color: color, fontSize: 12)),
+              // Fixed width: four buttons now share the bar, and the widest
+              // label ("Analyze 12") must not push the row past the screen.
+              SizedBox(
+                width: 72,
+                child: Text(label,
+                    textAlign: TextAlign.center,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: AppTextStyles.bodySm
+                        .copyWith(color: color, fontSize: 11)),
+              ),
             ],
           ),
         ),

@@ -83,6 +83,19 @@ def test_implausible_length_is_rejected_with_a_reason():
     assert implausible_measurement(30.0, 1499.0, 2560) is None       # ~50 cm frame, fine
 
 
+def test_stubby_blobs_are_dropped_but_long_thin_cracks_survive():
+    """The perforated-cabinet false alarm (scan cba3bd4f, 2026-09-15) came back
+    as round blobs at elongation 1.1-1.9; the thinnest real crack in the same
+    session was 25.2. Measured values, not invented ones."""
+    from inference import _too_stubby
+    for length, width in [(60.0, 50.0), (55.0, 50.0), (95.0, 50.0)]:   # 1.2, 1.1, 1.9
+        assert _too_stubby({"length_px": length, "width_px": width}) is True
+    for length, width in [(1260.0, 50.0), (1725.0, 50.0)]:             # 25.2, 34.5
+        assert _too_stubby({"length_px": length, "width_px": width}) is False
+    # a zero-width detection must not divide by zero or be silently dropped
+    assert _too_stubby({"length_px": 0.0, "width_px": 0.0}) is False
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):

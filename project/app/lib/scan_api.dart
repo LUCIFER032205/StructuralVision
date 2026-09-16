@@ -7,6 +7,15 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import 'config.dart';
 import 'models.dart';
 
+/// The backend refused the measurement as physically implausible (e.g. the
+/// two taps imply the photo spans 20 m). Carries the reason for the user.
+class MeasurementRejected implements Exception {
+  final String message;
+  MeasurementRejected(this.message);
+  @override
+  String toString() => message;
+}
+
 /// Client for the FastAPI backend. JWT comes from the live Supabase session.
 class ScanApi {
   String get _jwt {
@@ -76,7 +85,13 @@ class ScanApi {
           },
           body: jsonEncode({'length_cm': lengthCm}),
         )
-        .timeout(const Duration(seconds: 15));
+        .timeout(const Duration(seconds: 30));
+    if (res.statusCode == 422) {
+      final body = jsonDecode(res.body);
+      final detail = body is Map ? body['detail'] : null;
+      throw MeasurementRejected(
+          detail is String ? detail : 'That measurement does not look right.');
+    }
     if (res.statusCode != 200) {
       throw Exception('measurement failed (${res.statusCode}): ${res.body}');
     }

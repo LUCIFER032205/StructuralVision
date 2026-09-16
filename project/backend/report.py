@@ -39,15 +39,45 @@ _STANDARD_REF = {
 }
 
 
-def _assessment(scan: dict) -> str:
+def _width_range(scan: dict, image: Image.Image) -> tuple[float, float]:
+    """Recompute the graded width's upper bound from the stored detections and
+    the photo, so no extra column is needed. -> (graded_mm, upper_mm)."""
+    import numpy as np
+    from inference import profile_width_px, _DISAGREE_FACTOR
+
+    graded = scan.get("crack_width_mm") or 0.0
+    dets = scan.get("detections") or []
+    if not dets or not graded:
+        return graded, graded
+    d = max(dets, key=lambda x: x.get("area_ratio") or 0)
+    poly = np.asarray(d.get("polygon") or [], dtype=float)
+    if not d.get("width_px") or len(poly) < 4:
+        return graded, graded
+    trough = profile_width_px(np.asarray(image.convert("L")), poly)
+    if not trough:
+        return graded, graded
+    # graded came from the trough width, so scale it up by the mask ratio
+    upper = graded * d["width_px"] / trough
+    return graded, max(upper, graded)
+
+
+def _assessment(scan: dict, upper: float | None = None) -> str:
     if scan.get("risk_source") != "measured":
         return "Assessment: PRELIMINARY (image area only) - measure crack in AR for a standards-based grade."
-    s = (f"Assessment: MEASURED - width {scan['crack_width_mm']:.2f} mm, "
+    w = scan["crack_width_mm"]
+    width = (f"width {w:.2f}-{upper:.2f} mm" if upper and upper > w * _DISAGREE
+             else f"width {w:.2f} mm")
+    s = (f"Assessment: MEASURED - {width}, "
          f"{scan.get('damage_standard') or 'n/a'} class {scan.get('damage_class') or '-'} "
          f"({scan.get('damage_rating')})")
     if scan.get("residual_capacity_pct") is not None:
         s += f", residual capacity {scan['residual_capacity_pct']:.0f}%"
     return s
+
+
+_DISAGREE = 2.0
+_RANGE_NOTE = ("Width is a range: the photo's intensity profile and the segmentation mask "
+               "disagree on this crack. Graded on the lower figure; verify with a crack gauge.")
 
 
 def _overlay(image_bytes: bytes, detections: list[dict]) -> Image.Image:
@@ -102,10 +132,17 @@ def _scan_page(c, scan: dict, image_bytes: bytes, title: str) -> None:
     c.drawString(2 * cm, y - 1.6 * cm, _summary(risk, scan.get("component_type"), scan.get("crack_count", 0)))
     c.setFont("Helvetica", 11)
     c.drawString(2 * cm, y - 2.4 * cm, f"Maintenance window: {_MAINTENANCE.get(risk, '')}")
-    c.drawString(2 * cm, y - 3.2 * cm, _assessment(scan))
+    graded, upper = ((0.0, 0.0) if scan.get("risk_source") != "measured"
+                     else _width_range(scan, img))
+    c.drawString(2 * cm, y - 3.2 * cm, _assessment(scan, upper))
+    below = y - 3.8 * cm
+    if upper > graded * _DISAGREE:
+        c.setFont("Helvetica-Oblique", 9)
+        c.drawString(2 * cm, below, _RANGE_NOTE)
+        below -= 0.5 * cm
     if scan.get("damage_standard"):
         c.setFont("Helvetica", 8)
-        c.drawString(2 * cm, y - 3.8 * cm, _STANDARD_REF[scan["damage_standard"]])
+        c.drawString(2 * cm, below, _STANDARD_REF[scan["damage_standard"]])
 
 
 _RISK_ORDER = {"LOW": 0, "MEDIUM": 1, "HIGH": 2}

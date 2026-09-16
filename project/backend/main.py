@@ -7,6 +7,7 @@ POST /scan/{id}/measurement  JWT {length_cm} -> scan with measured (JBDPA/BRE 25
 
 All endpoints require Authorization: Bearer <supabase_jwt>.
 """
+import io
 import os
 from pathlib import Path
 
@@ -24,9 +25,12 @@ from functools import lru_cache
 from fastapi import FastAPI, UploadFile, File, Form, BackgroundTasks, HTTPException, Depends
 from fastapi.responses import Response
 from fastapi.staticfiles import StaticFiles
+import numpy as np
+from PIL import Image
 from pydantic import BaseModel, Field
 
-from inference import run_scan, load_models, measured_risk, width_from_measurement
+from inference import (run_scan, load_models, measured_risk, width_from_measurement,
+                       implausible_measurement)
 from auth import current_user
 import db
 import overlay
@@ -109,13 +113,36 @@ async def add_measurement(scan_id: str, m: Measurement, user_id: str = Depends(c
         raise HTTPException(404, "scan not found")
     if scan["status"] != "done":
         raise HTTPException(409, f"scan is {scan['status']}")
-    width_mm, crack_type = width_from_measurement(m.length_cm, scan.get("detections") or [])
-    if width_mm is None:
+    detections = scan.get("detections") or []
+    # The photo is needed twice here: its width turns the two-tap distance into
+    # a scale for the whole frame (the sanity check), and its pixels give the
+    # crack's intensity-trough width (the grade). One fetch on a deliberate
+    # user action is cheap enough.
+    image_width, gray = None, None
+    try:
+        photo = Image.open(io.BytesIO(db.download_image(scan_id)))
+        image_width = photo.width
+        gray = np.asarray(photo.convert("L"))
+    except Exception:
+        pass   # fall back to grading off the mask alone
+
+    if image_width and detections:
+        biggest = max(detections, key=lambda d: d.get("area_ratio") or 0)
+        reason = implausible_measurement(m.length_cm, biggest.get("length_px") or 0,
+                                         image_width)
+        if reason:
+            raise HTTPException(422, reason)
+
+    w = width_from_measurement(m.length_cm, detections, image_width, gray)
+    if w is None:
         raise HTTPException(422, "no measurable crack in this scan")
-    graded = measured_risk(width_mm, scan.get("component_type"), crack_type)
-    db.set_measurement(scan_id, width_mm, graded)
+    graded = measured_risk(w["width_mm"], scan.get("component_type"), w["crack_type"])
+    db.set_measurement(scan_id, w["width_mm"], graded)
     _overlay_glb.cache_clear()   # overlay label colour follows the scan risk
-    return db.get_scan(scan_id, user_id)
+    # The upper bound and uncertainty flag are derived, not stored — report.py
+    # recomputes them from the detections and the photo, so no migration.
+    return {**db.get_scan(scan_id, user_id),
+            "width_mm_upper": w["width_mm_upper"], "width_uncertain": w["uncertain"]}
 
 
 @app.get("/scan/{scan_id}/overlay.glb")

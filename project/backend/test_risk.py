@@ -1,7 +1,8 @@
 """Measured-risk chain pinned to the published tables. Run: python test_risk.py
 Numbers come from Nakano et al., 13WCEE 2004 Paper 124 (Tables 2-3, R criteria)
 and BRE Digest 251 (categories 0-5)."""
-from inference import measured_risk, width_from_measurement
+from inference import (measured_risk, width_from_measurement,
+                       implausible_measurement)
 
 
 def test_jbdpa_column_brittle_eta():
@@ -46,9 +47,40 @@ def test_out_of_scope_is_low():
 def test_width_from_measurement_uses_largest_crack():
     dets = [{"area_ratio": 0.01, "length_px": 100.0, "width_px": 50.0, "crack_type": "paint"},
             {"area_ratio": 0.05, "length_px": 400.0, "width_px": 2.0, "crack_type": "structural"}]
-    width_mm, crack_type = width_from_measurement(20.0, dets)    # 200 mm * 2/400
-    assert (round(width_mm, 3), crack_type) == (1.0, "structural")
-    assert width_from_measurement(20.0, []) == (None, None)
+    w = width_from_measurement(20.0, dets)                   # 200 mm * 2/400
+    assert (round(w["width_mm"], 3), w["crack_type"]) == (1.0, "structural")
+    assert w["uncertain"] is False                           # no photo -> mask only
+    assert width_from_measurement(20.0, []) is None
+
+
+def test_thin_crack_grades_off_the_photo_not_the_bloated_mask():
+    """The 2026-09-15 bug: a hairline mask is ~6x wider than the crack, so a
+    correct two-tap measurement still graded it HIGH. With the photo in hand
+    the trough width drives the grade and the mask becomes the upper bound."""
+    import numpy as np
+    # 400x400 photo, a 2 px dark vertical line on a light wall
+    gray = np.full((400, 400), 200, dtype=np.uint8)
+    gray[:, 199:201] = 40
+    poly = [[199.0, 10.0], [201.0, 10.0], [201.0, 390.0], [199.0, 390.0]]
+    dets = [{"area_ratio": 0.05, "length_px": 380.0, "width_px": 24.0,
+             "crack_type": "structural", "polygon": poly}]
+    mask_only = width_from_measurement(100.0, dets)
+    with_photo = width_from_measurement(100.0, dets, 400, gray)
+    # mask says 24/380 of 1000 mm = 63 mm; the actual line is ~2 px = ~5 mm
+    assert mask_only["width_mm"] > 50
+    assert with_photo["width_mm"] < 15, with_photo
+    assert with_photo["uncertain"] is True
+    assert with_photo["width_mm_upper"] > with_photo["width_mm"]
+    # and that is the difference between a bogus HIGH and a real grade
+    assert measured_risk(mask_only["width_mm"], "column")["risk_level"] == "HIGH"
+    assert measured_risk(with_photo["width_mm"], "column")["damage_class"] == "IV"
+
+
+def test_implausible_length_is_rejected_with_a_reason():
+    """Taps landing on the floor behind a wall imply an absurd frame size."""
+    assert implausible_measurement(400.0, 500.0, 2560) is not None   # ~20 m frame
+    assert implausible_measurement(0.5, 1400.0, 2560) is not None    # ~1 cm frame
+    assert implausible_measurement(30.0, 1499.0, 2560) is None       # ~50 cm frame, fine
 
 
 if __name__ == "__main__":

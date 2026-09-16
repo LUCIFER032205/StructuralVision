@@ -32,6 +32,79 @@ class _ResultScreenState extends State<ResultScreen> {
   late ScanResult result = widget.result;
   late final Future<ui.Image> _image = _decode(widget.imageBytes);
   int? _selected; // tapped detection index, shows its confidence
+  bool _grading = false;
+
+  /// Type a tape/ruler reading instead of measuring in AR. This is the only
+  /// route for wall, column and beam cracks: ARCore's vertical-plane mode
+  /// SIGSEGVs on the Vivo Y200, so AR measuring is floor/slab only.
+  Future<void> _enterLengthManually() async {
+    final controller = TextEditingController();
+    final cm = await showDialog<double>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppColors.surface,
+        title: const Text('Crack length'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'Measure the crack end to end with a tape or ruler and enter it '
+              'in centimetres. This scales the photo so the width can be graded.',
+              style: AppTextStyles.bodySm,
+            ),
+            const SizedBox(height: 16),
+            TextField(
+              controller: controller,
+              autofocus: true,
+              keyboardType:
+                  const TextInputType.numberWithOptions(decimal: true),
+              decoration: const InputDecoration(
+                labelText: 'Length',
+                suffixText: 'cm',
+                border: OutlineInputBorder(),
+              ),
+              onSubmitted: (v) =>
+                  Navigator.of(ctx).pop(double.tryParse(v.trim())),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.of(ctx).pop(),
+              child: const Text('Cancel')),
+          FilledButton(
+            onPressed: () => Navigator.of(ctx)
+                .pop(double.tryParse(controller.text.trim())),
+            child: const Text('Grade'),
+          ),
+        ],
+      ),
+    );
+    if (cm == null || !mounted) return;
+    if (cm <= 0 || cm > 1000) {
+      _snack('Enter a length between 0 and 1000 cm');
+      return;
+    }
+    setState(() => _grading = true);
+    try {
+      final updated = await scanApi.submitMeasurement(result.id, cm);
+      if (mounted) setState(() => result = updated);
+    } on MeasurementRejected catch (e) {
+      _snack(e.message, seconds: 5);
+    } catch (e) {
+      _snack('Could not grade measurement: $e');
+    } finally {
+      if (mounted) setState(() => _grading = false);
+    }
+  }
+
+  void _snack(String msg, {int seconds = 3}) {
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(msg), duration: Duration(seconds: seconds)));
+    }
+  }
 
   Future<void> _openAr({bool measure = false}) async {
     final updated = await Navigator.of(context).push<ScanResult>(
@@ -162,9 +235,18 @@ class _ResultScreenState extends State<ResultScreen> {
                               if (!noCracks)
                                 Text(
                                   result.isMeasured
-                                      ? 'Measured: ${result.crackWidthMm!.toStringAsFixed(1)} mm · ${result.gradeSummary}'
+                                      ? 'Measured: ${result.widthSummary} · ${result.gradeSummary}'
                                       : 'Preliminary estimate from the photo',
                                   style: AppTextStyles.bodySm,
+                                ),
+                              // A range means the photo and the mask disagree
+                              // on this crack; say so rather than imply
+                              // precision the measurement doesn't have.
+                              if (result.isMeasured && result.widthUncertain)
+                                Text(
+                                  'Width is a range — verify with a crack gauge',
+                                  style: AppTextStyles.bodySm
+                                      .copyWith(color: AppColors.riskMedium),
                                 ),
                             ],
                           ),
@@ -286,10 +368,42 @@ class _ResultScreenState extends State<ResultScreen> {
                     // Preliminary -> measured is the one step that turns the
                     // estimate into a standards-based grade; make it obvious.
                     if (!noCracks && !result.isMeasured) ...[
-                      FilledButton.icon(
-                        icon: const Icon(Icons.straighten, size: 18),
-                        label: const Text('Measure crack for a JBDPA / BRE grade'),
-                        onPressed: () => _openAr(measure: true),
+                      // Two routes to the same grading endpoint. AR only sees
+                      // floor/slab planes (vertical mode crashes ARCore on the
+                      // Y200), so walls/columns/beams go through the ruler.
+                      Row(
+                        children: [
+                          Expanded(
+                            child: FilledButton.icon(
+                              icon: const Icon(Icons.straighten, size: 18),
+                              label: const Text('Measure in AR'),
+                              onPressed: _grading
+                                  ? null
+                                  : () => _openAr(measure: true),
+                            ),
+                          ),
+                          const SizedBox(width: 10),
+                          Expanded(
+                            child: FilledButton.icon(
+                              icon: _grading
+                                  ? const SizedBox(
+                                      width: 16,
+                                      height: 16,
+                                      child: CircularProgressIndicator(
+                                          strokeWidth: 2))
+                                  : const Icon(Icons.edit_outlined, size: 18),
+                              label: const Text('Enter length'),
+                              onPressed:
+                                  _grading ? null : _enterLengthManually,
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 6),
+                      Text(
+                        'AR measuring works on floor and slab cracks; use '
+                        '"Enter length" with a tape for walls, columns and beams.',
+                        style: AppTextStyles.bodySm,
                       ),
                       const SizedBox(height: 10),
                     ],

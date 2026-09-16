@@ -237,15 +237,121 @@ def measured_risk(width_mm: float, component_type: str | None,
             "residual_capacity_pct": r, "rating": rating, "risk_level": _RATING_RISK[rating]}
 
 
-def width_from_measurement(length_cm: float, detections: list[dict]):
-    """AR two-tap gives the real length of the largest crack; its px width/length
-    ratio converts that to a width in mm. -> (width_mm, crack_type) or (None, None)."""
+# YOLOv8-seg emits mask prototypes at imgsz/4 and upsamples them to the image,
+# so the thinnest mask the model can draw is already several image pixels wide
+# no matter how fine the real crack is. Measured 2026-09-16: on a 2560px photo
+# at imgsz 1024 one proto cell spans 10 image px, and real crack masks came
+# back a median of 56 px wide. That is mask granularity, not crack width —
+# it is why correct two-tap measurements still graded hairlines at 5.5 mm.
+INFER_IMGSZ = 1024
+_WIDTH_FLOOR_CELLS = 3.0   # within 3 cells of the floor -> width is an upper bound
+
+
+def mask_resolution_floor_px(image_width: int, imgsz: int = INFER_IMGSZ) -> float:
+    """Thinnest width the mask can express, in image pixels."""
+    return 4.0 * image_width / imgsz
+
+
+# A two-tap AR measurement implies a scale for the whole frame. If that scale
+# says the photo covers a 40 m span, the taps landed on something far behind
+# the crack (the classic floor-plane-behind-a-wall case). Bounds are generous:
+# a phone photo of a building element frames roughly 5 cm to 15 m across.
+_MIN_FRAME_M, _MAX_FRAME_M = 0.05, 15.0
+
+
+def implausible_measurement(length_cm: float, length_px: float,
+                            image_width: int) -> str | None:
+    """-> reason the measurement can't be right, or None if it's plausible."""
+    if length_px <= 0:
+        return None
+    frame_m = (length_cm / 100.0) * image_width / length_px
+    if frame_m > _MAX_FRAME_M:
+        return (f"that length implies the photo spans {frame_m:.0f} m — the taps "
+                f"probably landed on a surface behind the crack")
+    if frame_m < _MIN_FRAME_M:
+        return (f"that length implies the photo spans only {frame_m * 100:.0f} cm — "
+                f"tap both ends of the crack itself")
+    return None
+
+
+def profile_width_px(gray: np.ndarray, poly: np.ndarray,
+                     half: int = 25, samples: int = 40) -> float | None:
+    """Crack width straight off the photo: the median full-width-half-minimum
+    of the dark trough, sampled perpendicular to the crack's major axis.
+
+    Measured 2026-09-16 against zoomed crops: on a thin crack this reads 4.0 px
+    where the mask says 23.8 px (the mask is ~6x too wide). On a broad spalled
+    region it UNDER-reads instead, because half-minimum of a wide dark patch
+    cuts inside the patch. Hence the caller keeps both numbers.
+    -> width in image pixels, or None when there is no readable trough."""
+    if len(poly) < 4:
+        return None
+    centered = poly - poly.mean(axis=0)
+    evals, evecs = np.linalg.eigh(np.cov(centered.T))
+    major = evecs[:, np.argmax(evals)]
+    normal = np.array([-major[1], major[0]])
+    t = centered @ major
+    span = t.max() - t.min()
+    if span <= 0:
+        return None
+    widths = []
+    order = np.argsort(t)
+    k = max(2, len(poly) // samples)   # nearest-k, so a sparse polygon still
+    for tv in np.linspace(t.min() * 0.9, t.max() * 0.9, samples):
+        # tracks a curved crack instead of falling back to a straight axis
+        near = order[np.argsort(np.abs(t[order] - tv))[:k]]
+        centre = poly[near].mean(axis=0)
+        pts = centre + np.outer(np.arange(-half, half + 1), normal)
+        xs = np.clip(pts[:, 0].astype(int), 0, gray.shape[1] - 1)
+        ys = np.clip(pts[:, 1].astype(int), 0, gray.shape[0] - 1)
+        prof = gray[ys, xs].astype(float)
+        base, trough = np.percentile(prof, 80), prof.min()
+        depth = base - trough
+        if depth < 8:            # flat profile: nothing crack-like here
+            continue
+        widths.append(int((prof < base - depth / 2).sum()))
+    return float(np.median(widths)) if widths else None
+
+
+_DISAGREE_FACTOR = 2.0   # beyond this the two width estimates are reported as a range
+
+
+def width_from_measurement(length_cm: float, detections: list[dict],
+                           image_width: int | None = None,
+                           gray: "np.ndarray | None" = None) -> dict | None:
+    """AR two-tap gives the real length of the largest crack; a pixel width
+    divided by its pixel length converts that to a width in mm.
+
+    Two pixel widths are computed because neither is reliable alone (see
+    profile_width_px): the photo's intensity trough, which is accurate on thin
+    cracks and under-reads on spalled patches, and the segmentation mask, which
+    is roughly right on wide cracks and grossly over-reads on hairlines. The
+    trough drives the grade when it is readable; the mask is kept as the upper
+    bound, and when they disagree past _DISAGREE_FACTOR the caller shows both
+    instead of a false-precision single number.
+
+    -> {"width_mm", "width_mm_upper", "uncertain", "crack_type"} or None."""
     if not detections:
-        return None, None
+        return None
     d = max(detections, key=lambda d: d.get("area_ratio") or 0)
-    if not d.get("length_px") or not d.get("width_px"):
-        return None, None
-    return length_cm * 10 * d["width_px"] / d["length_px"], d.get("crack_type") or "structural"
+    length_px, mask_width_px = d.get("length_px"), d.get("width_px")
+    if not length_px or not mask_width_px:
+        return None
+
+    mm_per_px = length_cm * 10 / length_px
+    upper = mask_width_px * mm_per_px
+
+    trough_px = None
+    if gray is not None:
+        poly = np.asarray(d.get("polygon") or [], dtype=float)
+        if len(poly) >= 4:
+            trough_px = profile_width_px(gray, poly)
+
+    width = trough_px * mm_per_px if trough_px else upper
+    uncertain = bool(trough_px) and upper > _DISAGREE_FACTOR * width
+    return {"width_mm": width, "width_mm_upper": max(upper, width),
+            "uncertain": uncertain,
+            "crack_type": d.get("crack_type") or "structural"}
 
 
 def run_scan(image_bytes: bytes, component_type: str | None = None) -> dict:

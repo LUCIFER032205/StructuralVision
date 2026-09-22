@@ -49,7 +49,8 @@ class _SitePreviewScreenState extends State<SitePreviewScreen> {
     _objects = objects;
     _anchors = anchors;
     session.onInitialize(
-        showPlanes: true, showFeaturePoints: true, handleTaps: true, showWorldOrigin: false);
+        showPlanes: true, showFeaturePoints: true, handleTaps: true,
+        handlePans: true, handleRotation: true, showWorldOrigin: false);
     objects.onInitialize();
     session.onPlaneOrPointTap = _onTap;
     session.onPlaneDetected = (count) {
@@ -57,7 +58,8 @@ class _SitePreviewScreenState extends State<SitePreviewScreen> {
         setState(() => _planeFound = true);
         // Feature points tank the frame rate on the Vivo Y200 once planes exist.
         session.onInitialize(
-            showPlanes: true, showFeaturePoints: false, handleTaps: true, showWorldOrigin: false);
+            showPlanes: true, showFeaturePoints: false, handleTaps: true,
+            handlePans: true, handleRotation: true, showWorldOrigin: false);
       }
     };
   }
@@ -150,9 +152,9 @@ class _SitePreviewScreenState extends State<SitePreviewScreen> {
                 ? 'Tap a desk or table to place a $_roomLabel model'
                 : 'Stand at the edge of the plot and tap the ground where the building goes')
             : (_mode == PreviewMode.room
-                ? 'Miniature ($_roomLabel) — walk around it'
+                ? 'Miniature ($_roomLabel) — walk around it · drag to move, twist with two fingers to rotate'
                 : 'True size: ${_building.footprint}, ${_building.sizeM.toStringAsFixed(0)} m — '
-                    'walk back ~${(_building.sizeM * 1.5).round()} m to see all of it');
+                    'walk back ~${(_building.sizeM * 1.5).round()} m to see all of it · drag to move, twist with two fingers to rotate');
     final roomStepIndex = _roomSteps.indexOf(_roomSizeM);
     return Scaffold(
       appBar: AppBar(

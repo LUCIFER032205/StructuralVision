@@ -7,6 +7,7 @@ import 'package:image_picker/image_picker.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
+import '../building_catalog.dart';
 import '../scan_api.dart';
 import '../theme.dart';
 import 'batch_screen.dart';
@@ -317,12 +318,15 @@ class _CameraScreenState extends State<CameraScreen> {
 
   // Camera must be released before ARCore opens (holding it SIGSEGVs libarcore_c.so).
   Future<void> _openSitePreview() async {
+    // Fetch while the live preview is still up — this call can take up to 8s.
+    final buildings = await BuildingCatalog.fetch();
+    if (!mounted) return;
     final c = _controller;
     _controller = null;
     await c?.dispose();
     if (!mounted) return;
-    await Navigator.of(context)
-        .push(MaterialPageRoute(builder: (_) => const SitePreviewScreen()));
+    await Navigator.of(context).push(MaterialPageRoute(
+        builder: (_) => SitePreviewScreen(buildings: buildings)));
     if (mounted) _init();
   }
 

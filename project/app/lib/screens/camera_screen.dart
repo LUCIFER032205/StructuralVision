@@ -127,8 +127,12 @@ class _CameraScreenState extends State<CameraScreen> {
           .clamp(_kZoomFloor, 1.0);
       _zoomMax = (await _controller!.getMaxZoomLevel())
           .clamp(1.0, _kZoomCeiling);
-      _zoom = 1.0;
-      await _controller!.setZoomLevel(_zoom);
+      _zoom = 1.0.clamp(_zoomMin, _zoomMax);
+      // Best effort: a device whose minimum zoom sits above 1.0 must not
+      // fail camera init just because the opening zoom level couldn't apply.
+      try {
+        await _controller!.setZoomLevel(_zoom);
+      } catch (_) {}
     } catch (e) {
       _initError = 'Camera unavailable: $e';
     }
@@ -318,16 +322,27 @@ class _CameraScreenState extends State<CameraScreen> {
 
   // Camera must be released before ARCore opens (holding it SIGSEGVs libarcore_c.so).
   Future<void> _openSitePreview() async {
-    // Fetch while the live preview is still up — this call can take up to 8s.
-    final buildings = await BuildingCatalog.fetch();
-    if (!mounted) return;
-    final c = _controller;
-    _controller = null;
-    await c?.dispose();
-    if (!mounted) return;
-    await Navigator.of(context).push(MaterialPageRoute(
-        builder: (_) => SitePreviewScreen(buildings: buildings)));
-    if (mounted) _init();
+    // _status guard blocks a double tap from pushing two AR screens (two
+    // ARCore sessions) while the up-to-8s fetch below is in flight.
+    if (_status != null || _burstShots != null) return;
+    setState(() => _status = 'Loading buildings…');
+    try {
+      // Fetch while the live preview is still up.
+      final buildings = await BuildingCatalog.fetch();
+      if (!mounted) return;
+      final c = _controller;
+      _controller = null;
+      await c?.dispose();
+      if (!mounted) return;
+      setState(() => _status = null);
+      await Navigator.of(context).push(MaterialPageRoute(
+          builder: (_) => SitePreviewScreen(buildings: buildings)));
+      if (mounted) _init();
+    } catch (e) {
+      _showError(e);
+    } finally {
+      if (mounted) setState(() => _status = null);
+    }
   }
 
   Future<void> _analyze(Uint8List bytes, {required String componentType}) async {

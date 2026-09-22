@@ -49,6 +49,8 @@ class _CameraScreenState extends State<CameraScreen> {
   double _zoom = 1.0;
   double _zoomMin = 1.0, _zoomMax = 1.0;
   double _zoomAtGestureStart = 1.0;
+  // Past 3.5x digital zoom only upscales blur; below 0.5x there is no lens.
+  static const _kZoomFloor = 0.5, _kZoomCeiling = 3.5;
   // Remembered across scans and app restarts; the viewfinder chip changes it.
   // Asked for only when unset, instead of a modal before every capture.
   String? _component;
@@ -109,13 +111,23 @@ class _CameraScreenState extends State<CameraScreen> {
       // 720x1280, i.e. the model was UPSCALING them to imgsz 1024. veryHigh
       // is 1920x1080, so hairline cracks survive to inference. Inference cost
       // is unchanged (still imgsz 1024); only the upload is bigger.
-      _controller = CameraController(back, ResolutionPreset.veryHigh,
+      // ...except veryHigh STILL gave 720x1280 on the vivo V2307 (2026-09-22
+      // test, all 24 scans): CameraX fell back below the 1080p bound. max
+      // lets CameraX take the largest JPEG the bound streams allow.
+      // ponytail: full-res upload (~3-5 MB/photo); downscale on-device to
+      // ~2k long edge if bursts over ngrok get slow.
+      _controller = CameraController(back, ResolutionPreset.max,
           enableAudio: false);
       await _controller!.initialize();
-      // Digital zoom: hairline cracks are easier to frame from a distance.
-      _zoomMin = await _controller!.getMinZoomLevel();
-      _zoomMax = await _controller!.getMaxZoomLevel();
-      _zoom = _zoomMin;
+      // Zoom like a stock camera: open at 1x, pinch in to 3.5x, pinch out
+      // to 0.5x. Below 1x only works where CameraX exposes the ultrawide as
+      // part of a logical camera (min ratio < 1); elsewhere the floor is 1x.
+      _zoomMin = (await _controller!.getMinZoomLevel())
+          .clamp(_kZoomFloor, 1.0);
+      _zoomMax = (await _controller!.getMaxZoomLevel())
+          .clamp(1.0, _kZoomCeiling);
+      _zoom = 1.0;
+      await _controller!.setZoomLevel(_zoom);
     } catch (e) {
       _initError = 'Camera unavailable: $e';
     }
@@ -433,17 +445,17 @@ class _CameraScreenState extends State<CameraScreen> {
                             child: _RecBadge(count: _burstShots!.length)),
                       ),
 
-                    // ── Zoom control ──────────────────────────────────────
+                    // ── Zoom presets (pinch on the preview for in-between) ─
                     if (_status == null && _zoomMax > _zoomMin)
                       Positioned(
                         right: 12,
                         top: MediaQuery.of(context).padding.top + 120,
                         bottom: 240, // clear of the multi-capture shot strip
-                        child: _ZoomBar(
+                        child: _ZoomPresets(
                           zoom: _zoom,
                           min: _zoomMin,
                           max: _zoomMax,
-                          onChanged: _setZoom,
+                          onSelect: _setZoom,
                         ),
                       ),
 
@@ -698,45 +710,66 @@ class _ShotStrip extends StatelessWidget {
   }
 }
 
-/// Vertical zoom slider + live factor. Pinch on the preview does the same;
-/// this gives a one-handed control and shows the current factor.
-class _ZoomBar extends StatelessWidget {
+/// Stock-camera zoom buttons. The one closest to the live factor is lit and
+/// shows the exact value, so a pinch to 1.7x reads "1.7x" on the 2x button.
+class _ZoomPresets extends StatelessWidget {
   final double zoom, min, max;
-  final ValueChanged<double> onChanged;
-  const _ZoomBar({
+  final ValueChanged<double> onSelect;
+  const _ZoomPresets({
     required this.zoom,
     required this.min,
     required this.max,
-    required this.onChanged,
+    required this.onSelect,
   });
 
   @override
   Widget build(BuildContext context) {
+    final presets = <double>[
+      if (min < 1) min,
+      1,
+      if (max >= 2) 2,
+      if (max > 2) max,
+    ];
+    final active = presets.reduce(
+        (a, b) => (zoom - a).abs() <= (zoom - b).abs() ? a : b);
+    String fmt(double v) {
+      final r = (v * 10).round() / 10;
+      return '${r.toStringAsFixed(r == r.roundToDouble() ? 0 : 1)}x';
+    }
     return Column(
       mainAxisAlignment: MainAxisAlignment.center,
       children: [
-        Container(
-          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-          decoration: BoxDecoration(
-            color: Colors.black.withValues(alpha: 0.6),
-            borderRadius: BorderRadius.circular(12),
-          ),
-          child: Text('${zoom.toStringAsFixed(1)}x',
-              style: AppTextStyles.bodySm.copyWith(color: Colors.white)),
-        ),
-        Expanded(
-          child: RotatedBox(
-            quarterTurns: 3,
-            child: Slider(
-              value: zoom.clamp(min, max),
-              min: min,
-              max: max,
-              activeColor: AppColors.accent,
-              inactiveColor: Colors.white24,
-              onChanged: onChanged,
+        // Highest zoom on top, like the physical direction of "in".
+        for (final p in presets.reversed)
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: 4),
+            child: Semantics(
+              button: true,
+              label: 'Zoom ${fmt(p)}',
+              child: GestureDetector(
+                onTap: () => onSelect(p),
+                child: Container(
+                  width: 48,
+                  height: 48,
+                  alignment: Alignment.center,
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    color: Colors.black.withValues(alpha: 0.55),
+                    border: p == active
+                        ? Border.all(color: AppColors.accent, width: 1.5)
+                        : null,
+                  ),
+                  child: Text(
+                    p == active ? fmt(zoom) : fmt(p),
+                    style: AppTextStyles.bodySm.copyWith(
+                      color: p == active ? AppColors.accent : Colors.white,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ),
+              ),
             ),
           ),
-        ),
       ],
     );
   }

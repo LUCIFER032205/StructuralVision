@@ -32,8 +32,10 @@ Future<void> _importBuilding(BuildContext context) async {
 
     final docsDir = await getApplicationDocumentsDirectory();
     final millis = DateTime.now().millisecondsSinceEpoch;
+    // Name stays unique per import — SceneView may cache models by path.
     destPath = '${docsDir.path}/custom_$millis.glb';
     await File(path).copy(destPath);
+    await _deleteOtherCustomModels(docsDir, keep: destPath);
   } catch (_) {
     if (destPath != null) {
       try {
@@ -61,6 +63,23 @@ Future<void> _importBuilding(BuildContext context) async {
     sizeM: sizeM,
     isCustom: true,
   ));
+}
+
+/// Removes every other `custom_*.glb` left behind by earlier imports, so the
+/// documents folder doesn't grow one file per import forever. Best effort —
+/// a stale file is harmless, so failures here are silently ignored.
+Future<void> _deleteOtherCustomModels(Directory docsDir, {required String keep}) async {
+  try {
+    await for (final entity in docsDir.list()) {
+      if (entity is! File) continue;
+      final name = entity.uri.pathSegments.last;
+      if (name.startsWith('custom_') && name.endsWith('.glb') && entity.path != keep) {
+        try {
+          await entity.delete();
+        } catch (_) {}
+      }
+    }
+  } catch (_) {}
 }
 
 /// Numeric-entry dialog for the real building's largest side, in metres.
@@ -91,7 +110,8 @@ Future<double?> _askSizeM(BuildContext context) {
             ),
             TextButton(
               onPressed: () {
-                final value = double.tryParse(controller.text);
+                final value =
+                    double.tryParse(controller.text.trim().replaceAll(',', '.'));
                 if (value == null || value < 1 || value > 300) {
                   setState(() => error = 'Enter a value between 1 and 300');
                   return;

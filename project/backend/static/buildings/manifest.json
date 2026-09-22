@@ -1,0 +1,36 @@
+{
+  "buildings": [
+    {
+      "id": "house",
+      "name": "Independent house (G+1)",
+      "file": "house.glb",
+      "size_m": 10.6,
+      "storeys": 2,
+      "footprint": "10 x 8 m"
+    },
+    {
+      "id": "apartment",
+      "name": "Apartment block (G+4)",
+      "file": "apartment.glb",
+      "size_m": 18.4,
+      "storeys": 5,
+      "footprint": "18 x 12 m"
+    },
+    {
+      "id": "office",
+      "name": "Office building (G+9)",
+      "file": "office.glb",
+      "size_m": 32.4,
+      "storeys": 10,
+      "footprint": "20 x 20 m"
+    },
+    {
+      "id": "tower",
+      "name": "Demo tower",
+      "file": "tower.glb",
+      "size_m": 20.0,
+      "storeys": 6,
+      "footprint": "6 x 6 m"
+    }
+  ]
+}

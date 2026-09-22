@@ -10,26 +10,44 @@ import '../theme.dart';
 /// Picks a .glb from device storage, copies it into the app documents
 /// folder, asks the real-world size, and pops the sheet with the resulting
 /// [BuildingType]. Leaves the sheet open (returns without popping) if the
-/// user cancels the file picker, picks a non-.glb file, or cancels the size
-/// dialog.
+/// user cancels the file picker, picks a non-.glb file, cancels the size
+/// dialog, or the picker/copy step fails (disk full, permission, I/O —
+/// shows a SnackBar and cleans up any partial copy).
 Future<void> _importBuilding(BuildContext context) async {
-  final result = await FilePicker.pickFiles(type: FileType.any);
-  final path = result?.files.single.path;
-  if (path == null) return; // picker cancelled
+  FilePickerResult? result;
+  String? destPath;
+  try {
+    result = await FilePicker.pickFiles(type: FileType.any);
+    final path = result?.files.single.path;
+    if (path == null) return; // picker cancelled
 
-  if (!path.toLowerCase().endsWith('.glb')) {
+    if (!path.toLowerCase().endsWith('.glb')) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Only .glb files are supported')),
+        );
+      }
+      return;
+    }
+
+    final docsDir = await getApplicationDocumentsDirectory();
+    final millis = DateTime.now().millisecondsSinceEpoch;
+    destPath = '${docsDir.path}/custom_$millis.glb';
+    await File(path).copy(destPath);
+  } catch (_) {
+    if (destPath != null) {
+      try {
+        final leftover = File(destPath);
+        if (await leftover.exists()) await leftover.delete();
+      } catch (_) {}
+    }
     if (context.mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Only .glb files are supported')),
+        const SnackBar(content: Text('Could not import the model — try again')),
       );
     }
     return;
   }
-
-  final docsDir = await getApplicationDocumentsDirectory();
-  final millis = DateTime.now().millisecondsSinceEpoch;
-  final destPath = '${docsDir.path}/custom_$millis.glb';
-  await File(path).copy(destPath);
 
   if (!context.mounted) return;
   final sizeM = await _askSizeM(context);

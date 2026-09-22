@@ -1,7 +1,93 @@
+import 'dart:io';
+
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:path_provider/path_provider.dart';
 
 import '../building_catalog.dart';
 import '../theme.dart';
+
+/// Picks a .glb from device storage, copies it into the app documents
+/// folder, asks the real-world size, and pops the sheet with the resulting
+/// [BuildingType]. Leaves the sheet open (returns without popping) if the
+/// user cancels the file picker, picks a non-.glb file, or cancels the size
+/// dialog.
+Future<void> _importBuilding(BuildContext context) async {
+  final result = await FilePicker.pickFiles(type: FileType.any);
+  final path = result?.files.single.path;
+  if (path == null) return; // picker cancelled
+
+  if (!path.toLowerCase().endsWith('.glb')) {
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Only .glb files are supported')),
+      );
+    }
+    return;
+  }
+
+  final docsDir = await getApplicationDocumentsDirectory();
+  final millis = DateTime.now().millisecondsSinceEpoch;
+  final destPath = '${docsDir.path}/custom_$millis.glb';
+  await File(path).copy(destPath);
+
+  if (!context.mounted) return;
+  final sizeM = await _askSizeM(context);
+  if (sizeM == null) return; // size dialog cancelled
+
+  if (!context.mounted) return;
+  Navigator.of(context).pop(BuildingType(
+    id: 'custom',
+    name: result!.files.single.name,
+    uri: Uri.file(destPath).toString(),
+    sizeM: sizeM,
+    isCustom: true,
+  ));
+}
+
+/// Numeric-entry dialog for the real building's largest side, in metres.
+/// Defaults to 10, accepts 1-300, returns null if cancelled.
+Future<double?> _askSizeM(BuildContext context) {
+  final controller = TextEditingController(text: '10');
+  return showDialog<double>(
+    context: context,
+    builder: (dialogContext) {
+      String? error;
+      return StatefulBuilder(builder: (context, setState) {
+        return AlertDialog(
+          title: const Text('How big is the real building?'),
+          content: TextField(
+            controller: controller,
+            autofocus: true,
+            keyboardType:
+                const TextInputType.numberWithOptions(decimal: true),
+            decoration: InputDecoration(
+              labelText: 'Largest side, metres',
+              errorText: error,
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(),
+              child: const Text('Cancel'),
+            ),
+            TextButton(
+              onPressed: () {
+                final value = double.tryParse(controller.text);
+                if (value == null || value < 1 || value > 300) {
+                  setState(() => error = 'Enter a value between 1 and 300');
+                  return;
+                }
+                Navigator.of(dialogContext).pop(value);
+              },
+              child: const Text('Import'),
+            ),
+          ],
+        );
+      });
+    },
+  );
+}
 
 /// Shows a modal bottom sheet listing the fetched building types and returns
 /// the tapped [BuildingType], or null if the user dismissed without picking.
@@ -67,6 +153,7 @@ class _SheetBody extends StatelessWidget {
                 _BuildingRow(b, selected: b.id == selectedId),
                 const SizedBox(height: 8),
               ],
+              _ImportRow(onTap: () => _importBuilding(context)),
             ],
           ),
         ),
@@ -129,6 +216,49 @@ class _BuildingRow extends StatelessWidget {
               if (selected)
                 const Icon(Icons.check_rounded,
                     color: AppColors.accent, size: 20),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _ImportRow extends StatelessWidget {
+  final VoidCallback onTap;
+  const _ImportRow({required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: AppColors.surface2,
+      borderRadius: BorderRadius.circular(kCardRadius),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(kCardRadius),
+        onTap: onTap,
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(kCardRadius),
+            border: Border.all(color: AppColors.border),
+          ),
+          child: Row(
+            children: [
+              Container(
+                width: 40,
+                height: 40,
+                decoration: BoxDecoration(
+                  color: AppColors.accent.withValues(alpha: 0.12),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: const Icon(Icons.upload_file_outlined,
+                    color: AppColors.accent, size: 20),
+              ),
+              const SizedBox(width: 14),
+              Expanded(
+                child: Text('Import your own model (.glb)',
+                    style: AppTextStyles.titleMd),
+              ),
             ],
           ),
         ),

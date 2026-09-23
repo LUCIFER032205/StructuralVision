@@ -17,9 +17,27 @@ class _LoginScreenState extends State<LoginScreen> {
   bool _busy          = false;
   bool _showPassword  = false;
   String? _error;
+  String? _notice;   // non-error feedback, e.g. "confirm your email"
 
   Future<void> _run(Future<void> Function() action) async {
-    setState(() { _busy = true; _error = null; });
+    // Supabase reads a sign-up with no credentials as an ANONYMOUS sign-in and
+    // answers "Anonymous sign-ins are disabled" — which tells the user nothing
+    // about the empty fields in front of them. Catch it here instead.
+    final email = _email.text.trim();
+    final password = _password.text;
+    if (email.isEmpty || password.isEmpty) {
+      setState(() => _error = 'Enter an email and a password');
+      return;
+    }
+    if (!email.contains('@')) {
+      setState(() => _error = 'That email address looks incomplete');
+      return;
+    }
+    if (password.length < 6) {
+      setState(() => _error = 'Password must be at least 6 characters');
+      return;
+    }
+    setState(() { _busy = true; _error = null; _notice = null; });
     try {
       await action();
     } on AuthException catch (e) {
@@ -30,6 +48,18 @@ class _LoginScreenState extends State<LoginScreen> {
       if (mounted) setState(() => _busy = false);
     }
   }
+
+  /// Sign-up only signs you in when the project has email confirmation off.
+  /// With it on, Supabase returns no session and the screen would just sit
+  /// there, so say what happened.
+  Future<void> _signUp(GoTrueClient auth) => _run(() async {
+        final res = await auth.signUp(
+            email: _email.text.trim(), password: _password.text);
+        if (res.session == null && mounted) {
+          setState(() => _notice =
+              'Account created. Check ${_email.text.trim()} for the confirmation link, then sign in.');
+        }
+      });
 
   Future<void> _editServer() async {
     final ctrl = TextEditingController(
@@ -175,6 +205,31 @@ class _LoginScreenState extends State<LoginScreen> {
                         ),
                       ),
                     ],
+                    if (_notice != null) ...[
+                      const SizedBox(height: 4),
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 12, vertical: 10),
+                        decoration: BoxDecoration(
+                          color: AppColors.accent.withValues(alpha: 0.1),
+                          borderRadius: BorderRadius.circular(8),
+                          border: Border.all(
+                              color: AppColors.accent.withValues(alpha: 0.4)),
+                        ),
+                        child: Row(
+                          children: [
+                            const Icon(Icons.mark_email_unread_outlined,
+                                color: AppColors.accent, size: 16),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: Text(_notice!,
+                                  style: AppTextStyles.bodySm
+                                      .copyWith(color: AppColors.accent)),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
                     const SizedBox(height: 20),
                     FilledButton(
                       onPressed: _busy
@@ -195,9 +250,7 @@ class _LoginScreenState extends State<LoginScreen> {
                     OutlinedButton(
                       onPressed: _busy
                           ? null
-                          : () => _run(() => auth.signUp(
-                              email: _email.text.trim(),
-                              password: _password.text)),
+                          : () => _signUp(auth),
                       child: const Text('Create account'),
                     ),
                   ],

@@ -1,88 +1,80 @@
-"""Generate preset massing models for the AR site preview.
+"""Build the AR site-preview catalogue from the Kenney city kits (CC0).
 
-Run from project/backend:  python make_buildings.py
-Writes static/buildings/*.glb and static/buildings/manifest.json.
-Swap any .glb for a nicer Blender/CC0 model later; keep size_m in sync.
+The three presets are Kenney models, re-exported as GLB with the kit's
+colormap texture baked in (the kits' own .glb files ship the texture in a
+sibling folder, so they render untextured), and scaled so each storey is
+about 3.2 m.
+
+Regenerate (only needed when swapping models):
+
+    curl -LO https://kenney.nl/media/pages/assets/city-kit-suburban/2c871b7af2-1745479373/kenney_city-kit-suburban_20.zip
+    curl -LO https://kenney.nl/media/pages/assets/city-kit-commercial/a742d900eb-1753115042/kenney_city-kit-commercial_2.1.zip
+    unzip -q kenney_city-kit-suburban_20.zip   -d src/suburban
+    unzip -q kenney_city-kit-commercial_2.1.zip -d src/commercial
+    python make_buildings.py src
+
+Writes static/buildings/*.glb and static/buildings/manifest.json. `size_m`
+is the model's largest real dimension in metres — the app scales models by
+that (ar_flutter_plugin_2 passes it to SceneView as scaleToUnits).
 """
 import json
 import shutil
+import sys
 from pathlib import Path
 
-import numpy as np
 import trimesh
+from PIL import Image
 
 OUT = Path("static/buildings")
 STOREY_M = 3.2
-WALL = [236, 226, 208, 255]
-BAND = [150, 140, 128, 255]
-ROOF = [150, 62, 48, 255]
-GLASS = [90, 120, 150, 255]
 
-
-def _box(w, d, h, z0, color):
-    m = trimesh.creation.box(extents=[w, d, h])
-    m.apply_translation([0, 0, z0 + h / 2])
-    m.visual.face_colors = color
-    return m
-
-
-def building(w, d, storeys, roof):
-    """w x d footprint in metres, Z up. Returns a Y-up Trimesh ready for GLB export."""
-    h = storeys * STOREY_M
-    parts = [_box(w, d, h, 0, WALL)]
-    for i in range(1, storeys):                      # floor bands read as storeys
-        parts.append(_box(w + 0.1, d + 0.1, 0.25, i * STOREY_M - 0.125, BAND))
-    for i in range(storeys):                         # window strip, front face
-        z = i * STOREY_M + 1.0
-        g = _box(w * 0.8, 0.05, 1.2, z, GLASS)
-        g.apply_translation([0, -d / 2 - 0.03, 0])
-        parts.append(g)
-    if roof == "pitched":
-        # Triangular prism as a convex hull: no shapely needed (not installed).
-        x, y = w / 2 + 0.3, d / 2 + 0.3
-        r = trimesh.Trimesh(vertices=[[sx, sy, sz] for sy in (-y, y)
-                                      for sx, sz in ((-x, h), (x, h), (0, h + 2.2))]).convex_hull
-        r.visual.face_colors = ROOF
-        parts.append(r)
-    else:
-        parts.append(_box(w + 0.4, d + 0.4, 0.4, h, BAND))  # parapet slab
-    mesh = trimesh.util.concatenate(parts)
-    # glTF is Y-up: rotate Z-up -> Y-up so the model stands upright in ARCore.
-    mesh.apply_transform(trimesh.transformations.rotation_matrix(-np.pi / 2, [1, 0, 0]))
-    return mesh
-
-
+# id, display name, kit folder, model stem, storeys.
+# Storey counts are what the model actually shows (window rows + ground
+# floor) — the label and the height have to agree with the geometry.
 PRESETS = [
-    # id, name, w, d, storeys, roof
-    ("house", "Independent house (G+1)", 10, 8, 2, "pitched"),
-    ("apartment", "Apartment block (G+4)", 18, 12, 5, "flat"),
-    ("office", "Office building (G+9)", 20, 20, 10, "flat"),
+    ("house", "Independent house (G+1)", "suburban", "building-type-e", 2),
+    ("apartment", "Apartment block (G+3)", "commercial", "building-f", 4),
+    ("office", "Office building (G+6)", "commercial", "building-skyscraper-a", 7),
 ]
 
 
-def main():
+def convert(kit_dir: Path, stem: str, storeys: int):
+    """OBJ + the kit colormap -> textured mesh, plus its real size in metres."""
+    mesh = trimesh.load(kit_dir / "Models/OBJ format" / f"{stem}.obj", force="mesh")
+    texture = Image.open(kit_dir / "Models/GLB format/Textures/colormap.png").convert("RGBA")
+    mesh.visual = trimesh.visual.TextureVisuals(uv=mesh.visual.uv, image=texture)
+    # Models are Y-up already. Scale so the roof lands at storeys * STOREY_M.
+    w, h, d = mesh.extents
+    size_m = max(mesh.extents) * (storeys * STOREY_M) / h
+    footprint = f"{w * size_m / max(mesh.extents):.0f} x {d * size_m / max(mesh.extents):.0f} m"
+    return mesh, round(float(size_m), 1), footprint
+
+
+def main(src: Path):
     OUT.mkdir(parents=True, exist_ok=True)
     entries = []
-    for pid, name, w, d, storeys, roof in PRESETS:
-        mesh = building(w, d, storeys, roof)
+    for pid, name, kit, stem, storeys in PRESETS:
+        mesh, size_m, footprint = convert(src / kit, stem, storeys)
         mesh.export(OUT / f"{pid}.glb")
         entries.append({"id": pid, "name": name, "file": f"{pid}.glb",
-                        "size_m": round(float(max(mesh.extents)), 1),
-                        "storeys": storeys, "footprint": f"{w} x {d} m"})
+                        "size_m": size_m, "storeys": storeys, "footprint": footprint})
     shutil.copyfile("static/building.glb", OUT / "tower.glb")
     entries.append({"id": "tower", "name": "Demo tower", "file": "tower.glb",
                     "size_m": 20.0, "storeys": 6, "footprint": "6 x 6 m"})
-    (OUT / "manifest.json").write_text(json.dumps({"buildings": entries}, indent=2))
+    (OUT / "manifest.json").write_text(json.dumps({"buildings": entries}, indent=2) + "\n")
     return entries
 
 
 if __name__ == "__main__":
-    entries = main()
-    # Self-check: every file loads back, stands upright (Y is the tallest axis for
-    # towers), and size_m matches the exported geometry.
+    entries = main(Path(sys.argv[1] if len(sys.argv) > 1 else "src"))
+    # Self-check: every file loads back, keeps its texture, stands upright,
+    # and its height matches the storey count it claims.
     for e in entries:
         m = trimesh.load(OUT / e["file"], force="mesh")
-        assert abs(max(m.extents) - e["size_m"]) < 0.2 or e["id"] == "tower", e
-    office = trimesh.load(OUT / "office.glb", force="mesh")
-    assert office.extents[1] == max(office.extents), "office should be tallest along Y (up)"
-    print("ok:", [(e["id"], e["size_m"]) for e in entries])
+        scale = e["size_m"] / max(m.extents)
+        if e["id"] != "tower":
+            assert m.visual.material.baseColorTexture is not None, f"{e['id']} lost its texture"
+            height = m.extents[1] * scale
+            assert abs(height - e["storeys"] * STOREY_M) < 0.1, (e["id"], height)
+            assert m.extents[1] == max(m.extents) or e["id"] == "house", f"{e['id']} not upright"
+    print("ok:", [(e["id"], e["size_m"], e["footprint"]) for e in entries])

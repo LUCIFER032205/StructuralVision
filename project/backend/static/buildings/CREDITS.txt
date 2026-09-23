@@ -1,0 +1,6 @@
+house.glb, apartment.glb, office.glb are derived from Kenney's City Kit
+(Suburban) and City Kit (Commercial), both CC0 (public domain):
+  https://kenney.nl/assets/city-kit-suburban
+  https://kenney.nl/assets/city-kit-commercial
+Re-exported as GLB with the kit colormap baked in, and scaled to real size
+by make_buildings.py. tower.glb is the project's own earlier model.

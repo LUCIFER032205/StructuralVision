@@ -4,25 +4,25 @@
       "id": "house",
       "name": "Independent house (G+1)",
       "file": "house.glb",
-      "size_m": 10.6,
+      "size_m": 7.3,
       "storeys": 2,
-      "footprint": "10 x 8 m"
+      "footprint": "7 x 6 m"
     },
     {
       "id": "apartment",
-      "name": "Apartment block (G+4)",
+      "name": "Apartment block (G+3)",
       "file": "apartment.glb",
-      "size_m": 18.4,
-      "storeys": 5,
-      "footprint": "18 x 12 m"
+      "size_m": 12.8,
+      "storeys": 4,
+      "footprint": "6 x 8 m"
     },
     {
       "id": "office",
-      "name": "Office building (G+9)",
+      "name": "Office building (G+6)",
       "file": "office.glb",
-      "size_m": 32.4,
-      "storeys": 10,
-      "footprint": "20 x 20 m"
+      "size_m": 22.4,
+      "storeys": 7,
+      "footprint": "11 x 11 m"
     },
     {
       "id": "tower",

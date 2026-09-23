@@ -12,10 +12,13 @@ import '../theme.dart';
 /// [BuildingType]. Leaves the sheet open (returns without popping) if the
 /// user cancels the file picker, picks a non-.glb file, cancels the size
 /// dialog, or the picker/copy step fails (disk full, permission, I/O —
-/// shows a SnackBar and cleans up any partial copy).
+/// shows a SnackBar and cleans up any partial copy). Earlier imports are
+/// deleted only once an import is confirmed: an abandoned one must not
+/// delete the file behind a model already placed in the AR session.
 Future<void> _importBuilding(BuildContext context) async {
   FilePickerResult? result;
   String? destPath;
+  Directory? docsDir;
   try {
     result = await FilePicker.pickFiles(type: FileType.any);
     final path = result?.files.single.path;
@@ -30,12 +33,11 @@ Future<void> _importBuilding(BuildContext context) async {
       return;
     }
 
-    final docsDir = await getApplicationDocumentsDirectory();
+    docsDir = await getApplicationDocumentsDirectory();
     final millis = DateTime.now().millisecondsSinceEpoch;
     // Name stays unique per import — SceneView may cache models by path.
     destPath = '${docsDir.path}/custom_$millis.glb';
     await File(path).copy(destPath);
-    await _deleteOtherCustomModels(docsDir, keep: destPath);
   } catch (_) {
     if (destPath != null) {
       try {
@@ -53,7 +55,16 @@ Future<void> _importBuilding(BuildContext context) async {
 
   if (!context.mounted) return;
   final sizeM = await _askSizeM(context);
-  if (sizeM == null) return; // size dialog cancelled
+  if (sizeM == null) {
+    // Cancelled: drop the copy just made, and leave earlier imports alone —
+    // one of them may be the model currently placed in the AR session.
+    try {
+      await File(destPath).delete();
+    } catch (_) {}
+    return;
+  }
+  // Only now that this import is confirmed do older copies become dead weight.
+  await _deleteOtherCustomModels(docsDir, keep: destPath);
 
   if (!context.mounted) return;
   Navigator.of(context).pop(BuildingType(

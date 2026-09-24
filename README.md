@@ -14,7 +14,7 @@ project/
 ├── backend/      # FastAPI inference + auth server
 └── models/       # YOLOv8 model configs (weights downloaded separately)
 docs/             # Architecture diagrams, research notes
-datasets/         # Training images — NOT in git (download separately)
+datasets/         # Training images NOT in git (download separately)
 ```
 
 ---

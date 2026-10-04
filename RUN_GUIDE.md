@@ -3,6 +3,8 @@
 How to start the backend, connect the phone, and rebuild the APK, all from VS Code.
 Every command is also available as a VS Code **Task**, so you rarely need to type anything.
 
+> For running the backend on a free cloud server instead of this PC, see [DEPLOY_GUIDE.md](DEPLOY_GUIDE.md).
+
 ---
 
 ## 0. One-time setup (already done on this PC)

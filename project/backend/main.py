@@ -20,6 +20,7 @@ if _ENV.exists():
         if _sep and not _k.startswith("#"):
             os.environ.setdefault(_k.strip(), _v.strip().strip('"').strip("'"))
 
+import asyncio
 from contextlib import asynccontextmanager
 from functools import lru_cache
 from fastapi import FastAPI, UploadFile, File, Form, BackgroundTasks, HTTPException, Depends
@@ -37,16 +38,35 @@ import overlay
 import report
 
 
+def _ping_supabase():
+    db._conn().table("scans").select("id").limit(1).execute()
+
+
+async def _keep_supabase_awake(hours: float):
+    """A free Supabase project pauses after ~7 days without database activity,
+    taking logins down with it. A tiny query every few hours counts as activity."""
+    while True:
+        await asyncio.sleep(hours * 3600)
+        try:
+            await asyncio.to_thread(_ping_supabase)
+        except Exception as e:
+            print(f"Supabase keep-alive failed: {e!r}")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     load_models()  # pay the model-load cost once at boot, not on first request
     try:
-        db._conn().table("scans").select("id").limit(1).execute()
+        _ping_supabase()
         print("Supabase: connected OK")
     except Exception as e:
         print(f"\n!!! SUPABASE NOT CONNECTED: {e!r}\n!!! Run: python check_setup.py  (see RUN_GUIDE.md)\n")
     db.ensure_bucket()
+    hours = float(os.environ.get("KEEPALIVE_HOURS", "12"))
+    keepalive = asyncio.create_task(_keep_supabase_awake(hours)) if hours > 0 else None
     yield
+    if keepalive:
+        keepalive.cancel()
 
 
 app = FastAPI(title="Structural Vision AR", lifespan=lifespan)

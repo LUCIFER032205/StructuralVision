@@ -6,3 +6,5 @@ pillow
 numpy
 supabase
 python-jose[cryptography]
+trimesh
+reportlab

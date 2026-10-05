@@ -162,9 +162,9 @@ and users see this address as the sender.
 
 ### 6b. Plug it into Supabase
 
-Supabase dashboard → your project → **Authentication**:
+Supabase dashboard → your project → **Authentication** (left sidebar):
 
-1. **SMTP Settings → Enable custom SMTP:**
+1. **NOTIFICATIONS → Emails → "SMTP Settings" tab** (next to "Templates") → **Enable custom SMTP:**
 
    | Field | Value |
    |---|---|
@@ -175,9 +175,9 @@ Supabase dashboard → your project → **Authentication**:
    | Username | `structuralvision.app@gmail.com` |
    | Password | the 16-character app password (no spaces) |
 
-2. **Rate Limits →** raise **"Rate limit for sending emails"** (e.g. `30` per hour).
+2. **CONFIGURATION → Rate Limits →** raise **"Rate limit for sending emails"** (e.g. `30` per hour).
    It's a separate cap from the SMTP one.
-3. **URL Configuration → Site URL:** `https://<your-subdomain>.duckdns.org/static/confirmed.html`
+3. **CONFIGURATION → URL Configuration → Site URL:** `https://<your-subdomain>.duckdns.org/static/confirmed.html`
    That's where the confirmation link lands. Without it, users end on a broken `localhost` page,
    even though their account *is* confirmed.
 4. Test: sign up in the app with a fresh address → the email arrives from `StructuralVision` →

@@ -3,7 +3,8 @@ main.py — Structural Vision AR backend.
 
 POST /scan          multipart image + JWT  -> {scan_id, status: "pending"}
 GET  /scan/{id}     JWT                     -> {status, result?}   (Flutter polls every 2s)
-POST /scan/{id}/measurement  JWT {length_cm} -> scan with measured (JBDPA/BRE 251) risk
+POST /scan/{id}/cracks/{crack_id}/measurement  JWT {length_cm} -> that crack graded (JBDPA/BRE 251)
+POST /scan/{id}/cracks/{crack_id}/status       JWT {status}    -> skipped | not_crack | todo
 
 All endpoints require Authorization: Bearer <supabase_jwt>.
 """
@@ -21,6 +22,7 @@ if _ENV.exists():
             os.environ.setdefault(_k.strip(), _v.strip().strip('"').strip("'"))
 
 from contextlib import asynccontextmanager
+from typing import Literal
 from functools import lru_cache
 from fastapi import FastAPI, UploadFile, File, Form, BackgroundTasks, HTTPException, Depends
 from fastapi.responses import Response
@@ -29,7 +31,7 @@ import numpy as np
 from PIL import Image
 from pydantic import BaseModel, Field
 
-from inference import (run_scan, load_models, measured_risk, width_from_measurement,
+from inference import (run_scan, load_models, crack_measurement, summarize,
                        implausible_measurement)
 from auth import current_user
 import db
@@ -101,54 +103,66 @@ async def get_scan(scan_id: str, user_id: str = Depends(current_user)):
 
 
 class Measurement(BaseModel):
-    length_cm: float = Field(gt=0, le=1000)   # AR two-tap distance along the crack
+    length_cm: float = Field(gt=0, le=1000)   # AR two-tap or tape, along the crack
 
 
-@app.post("/scan/{scan_id}/measurement")
-async def add_measurement(scan_id: str, m: Measurement, user_id: str = Depends(current_user)):
-    """Physical scale from AR -> crack width -> published damage grade.
-    Replaces the preliminary pixel-area risk on the stored scan and its report."""
+class CrackStatus(BaseModel):
+    status: Literal["skipped", "not_crack", "todo"]
+
+
+def _crack(scan_id: str, crack_id: str, user_id: str) -> tuple[dict, dict]:
     scan = db.get_scan(scan_id, user_id)
     if scan is None:
         raise HTTPException(404, "scan not found")
     if scan["status"] != "done":
         raise HTTPException(409, f"scan is {scan['status']}")
-    detections = scan.get("detections") or []
-    # The photo is needed twice here: its width turns the two-tap distance into
-    # a scale for the whole frame (the sanity check), and its pixels give the
-    # crack's intensity-trough width (the grade). One fetch on a deliberate
-    # user action is cheap enough.
-    image_width, gray = None, None
+    det = next((d for d in scan.get("detections") or [] if d["id"] == crack_id), None)
+    if det is None:
+        raise HTTPException(404, "crack not found")
+    return scan, det
+
+
+def _resummarize(scan: dict, user_id: str) -> dict:
+    db.update_scan(scan["id"], summarize(scan["detections"], scan.get("component_type")))
+    _overlay_glb.cache_clear()   # overlay drops dismissed cracks, label follows risk
+    return db.get_scan(scan["id"], user_id)
+
+
+@app.post("/scan/{scan_id}/cracks/{crack_id}/measurement")
+async def measure_crack(scan_id: str, crack_id: str, m: Measurement,
+                        user_id: str = Depends(current_user)):
+    """Physical length of one crack -> its width -> its published grade; the
+    wall takes the worst graded crack."""
+    scan, det = _crack(scan_id, crack_id, user_id)
+    gray = None
     try:
         photo = Image.open(io.BytesIO(db.download_image(scan_id)))
-        image_width = photo.width
-        gray = np.asarray(photo.convert("L"))
-    except Exception:
-        pass   # fall back to grading off the mask alone
-
-    if image_width and detections:
-        biggest = max(detections, key=lambda d: d.get("area_ratio") or 0)
-        reason = implausible_measurement(m.length_cm, biggest.get("length_px") or 0,
-                                         image_width)
+        # Taps that land on the floor behind a wall imply an absurd frame size.
+        reason = implausible_measurement(m.length_cm, det.get("length_px") or 0, photo.width)
         if reason:
             raise HTTPException(422, reason)
+        gray = np.asarray(photo.convert("L"))
+    except HTTPException:
+        raise
+    except Exception:
+        pass   # photo unavailable: grade off the mask alone
+    meas = crack_measurement(m.length_cm, det, scan.get("component_type"), gray)
+    if meas is None:
+        raise HTTPException(422, "this crack has no measurable length")
+    db.update_detection(crack_id, {"status": "measured", "measurement": meas})
+    det.update(status="measured", measurement=meas)
+    return _resummarize(scan, user_id)
 
-    w = width_from_measurement(m.length_cm, detections, image_width, gray)
-    if w is None:
-        raise HTTPException(422, "no measurable crack in this scan")
-    graded = measured_risk(w["width_mm"], scan.get("component_type"), w["crack_type"])
-    db.set_measurement(scan_id, w["width_mm"], graded)
-    _overlay_glb.cache_clear()   # overlay label colour follows the scan risk
-    # The upper bound and uncertainty flag are derived, not stored — report.py
-    # recomputes them from the detections and the photo, so no migration.
-    return {**db.get_scan(scan_id, user_id),
-            "width_mm_upper": w["width_mm_upper"],
-            "width_uncertain": w["uncertain"],
-            "width_resolved": w["resolved"],
-            # What one pixel is worth at this framing. A crack finer than about
-            # a pixel can't be measured from this photo however good the maths —
-            # the app turns this into "re-shoot closer" guidance.
-            "mm_per_px": w["mm_per_px"]}
+
+@app.post("/scan/{scan_id}/cracks/{crack_id}/status")
+async def set_crack_status(scan_id: str, crack_id: str, s: CrackStatus,
+                           user_id: str = Depends(current_user)):
+    """Skip a crack, dismiss it as not a crack, or reset it to to-do."""
+    scan, det = _crack(scan_id, crack_id, user_id)
+    status = None if s.status == "todo" else s.status
+    db.update_detection(crack_id, {"status": status, "measurement": None})
+    det.update(status=status, measurement=None)
+    return _resummarize(scan, user_id)
 
 
 @app.get("/scan/{scan_id}/overlay.glb")
@@ -171,7 +185,7 @@ def _overlay_glb(scan_id: str) -> bytes:
         raise HTTPException(404, "scan image not stored")
     return overlay.build_overlay_glb(
         image_bytes,
-        scan.get("detections") or [],
+        [d for d in scan.get("detections") or [] if d.get("status") != "not_crack"],
         scan.get("component_type"),
         scan.get("risk_level"),
     )

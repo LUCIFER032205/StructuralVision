@@ -50,8 +50,10 @@ class _HistoryScreenState extends State<HistoryScreen> {
 
   String _formatDate(DateTime? dt) {
     if (dt == null) return '—';
+    const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+                    'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
     final d = dt.toLocal();
-    return '${d.year}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}  '
+    return '${d.day} ${months[d.month - 1]}, '
         '${d.hour.toString().padLeft(2, '0')}:${d.minute.toString().padLeft(2, '0')}';
   }
 
@@ -133,82 +135,62 @@ class _HistoryScreenState extends State<HistoryScreen> {
             ));
           }
 
+          // Plain rows with hairline dividers: a list of scans is one list,
+          // not a stack of separate cards.
           return ListView.separated(
-            padding: const EdgeInsets.symmetric(
-                horizontal: kPagePadding, vertical: 16),
+            padding: EdgeInsets.only(
+                top: 8, bottom: 16 + MediaQuery.of(context).padding.bottom),
             itemCount: scans.length,
-            separatorBuilder: (_, __) => const SizedBox(height: 8),
+            separatorBuilder: (_, __) =>
+                const Divider(indent: kPagePadding, endIndent: kPagePadding),
             itemBuilder: (context, i) {
-              final s     = scans[i];
-              final risk  = s.riskLevel ?? '—';
+              final s      = scans[i];
+              final risk   = s.riskLevel;
               final isDone = s.isDone;
-              return AppCard(
+              final n      = s.crackCount;
+              return InkWell(
                 onTap: isDone ? () => _open(s) : null,
-                padding: const EdgeInsets.symmetric(
-                    horizontal: 16, vertical: 14),
-                child: Row(
-                  children: [
-                    // Risk / status indicator
-                    risk == '—'
-                        ? Container(
-                            width: 40, height: 40,
-                            decoration: BoxDecoration(
-                              color: AppColors.surface2,
-                              borderRadius: BorderRadius.circular(10),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: kPagePadding, vertical: 16),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              s.componentType != null
+                                  ? ComponentSelectSheet.labelFor(
+                                      s.componentType)
+                                  : s.status,
+                              style: AppTextStyles.titleMd,
                             ),
-                            child: const Center(
-                              child: SizedBox(
-                                width: 18, height: 18,
-                                child: CircularProgressIndicator(
-                                    strokeWidth: 2,
-                                    color: AppColors.accent),
-                              ),
+                            const SizedBox(height: 4),
+                            Text(
+                              [
+                                if (n != null) '$n crack${n == 1 ? '' : 's'}',
+                                _formatDate(s.createdAt),
+                              ].join('  ·  '),
+                              style: AppTextStyles.bodySm,
                             ),
-                          )
-                        : RiskBadge(risk),
-
-                    const SizedBox(width: 14),
-
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            s.componentType != null
-                                ? ComponentSelectSheet.labelFor(s.componentType)
-                                : s.status,
-                            style: AppTextStyles.titleSm
-                                .copyWith(color: AppColors.textPrimary),
-                          ),
-                          const SizedBox(height: 3),
-                          Row(
-                            children: [
-                              if (s.crackCount != null) ...[
-                                Text('${s.crackCount} cracks',
-                                    style: AppTextStyles.bodySm),
-                                const SizedBox(width: 8),
-                                Container(
-                                    width: 3,
-                                    height: 3,
-                                    decoration: const BoxDecoration(
-                                      color: AppColors.textMuted,
-                                      shape: BoxShape.circle,
-                                    )),
-                                const SizedBox(width: 8),
-                              ],
-                              Text(_formatDate(s.createdAt),
-                                  style: AppTextStyles.mono
-                                      .copyWith(fontSize: 12)),
-                            ],
-                          ),
-                        ],
+                          ],
+                        ),
                       ),
-                    ),
-
-                    if (isDone)
-                      const Icon(Icons.chevron_right,
-                          color: AppColors.textMuted, size: 18),
-                  ],
+                      const SizedBox(width: 16),
+                      if (risk != null)
+                        RiskBadge(risk)
+                      else if (s.isError)
+                        const RiskBadge('FAILED')
+                      else
+                        const SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: CircularProgressIndicator(
+                              strokeWidth: 2, color: AppColors.accent),
+                        ),
+                    ],
+                  ),
                 ),
               );
             },

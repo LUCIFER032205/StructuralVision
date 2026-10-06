@@ -36,8 +36,16 @@ class _SitePreviewScreenState extends State<SitePreviewScreen> {
 
   late BuildingType _building = widget.buildings.first;
   PreviewMode _mode = PreviewMode.room; // room first: works anywhere, desk is the demo case
-  double _roomSizeM = BuildingCatalog.roomDefaultM;
-  static const _roomSteps = [0.2, 0.4, 0.8, 1.5]; // tabletop .. coffee-table size
+  late double _roomSizeM = _fitRoom(BuildingCatalog.roomDefaultM);
+  // Where drag / twist left the model, relative to its anchor. A resize or a
+  // building switch reloads the node, which would otherwise snap it back.
+  vm.Matrix4? _placement;
+
+  List<double> get _roomSteps => BuildingCatalog.roomSteps
+      .where((m) => m >= _building.roomMinM)
+      .toList();
+
+  double _fitRoom(double m) => m < _building.roomMinM ? _building.roomMinM : m;
 
   String get _roomLabel => _roomSizeM < 1
       ? '${(_roomSizeM * 100).round()} cm'
@@ -52,6 +60,9 @@ class _SitePreviewScreenState extends State<SitePreviewScreen> {
         showPlanes: true, showFeaturePoints: true, handleTaps: true,
         handlePans: true, handleRotation: true, showWorldOrigin: false);
     objects.onInitialize();
+    // Drag and twist run natively (patched plugin); remember where they end.
+    objects.onPanEnd = (_, transform) => _placement = transform;
+    objects.onRotationEnd = (_, transform) => _placement = transform;
     session.onPlaneOrPointTap = _onTap;
     session.onPlaneDetected = (count) {
       if (!_planeFound && count > 0 && mounted) {
@@ -92,6 +103,8 @@ class _SitePreviewScreenState extends State<SitePreviewScreen> {
     );
     if (await _objects?.addNode(node, planeAnchor: _anchor) == true) {
       _node = node;
+      final placed = _placement;
+      if (placed != null) node.transform = placed; // keeps scale (plugin patch)
       return true;
     }
     _toast(_building.isCustom
@@ -122,7 +135,12 @@ class _SitePreviewScreenState extends State<SitePreviewScreen> {
   Future<void> _pickBuilding() async {
     final picked = await BuildingSelectSheet.show(context,
         buildings: widget.buildings, selectedId: _building.id);
-    if (picked != null) await _reload(() => _building = picked);
+    if (picked != null) {
+      await _reload(() {
+        _building = picked;
+        _roomSizeM = _fitRoom(_roomSizeM);
+      });
+    }
   }
 
   Future<void> _reset() async {
@@ -132,6 +150,7 @@ class _SitePreviewScreenState extends State<SitePreviewScreen> {
     setState(() {
       _node = null;
       _anchor = null;
+      _placement = null;
     });
   }
 

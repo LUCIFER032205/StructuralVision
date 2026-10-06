@@ -23,6 +23,11 @@ class BuildingType {
     this.isCustom = false,
   });
 
+  /// Smallest room-mode size that still reads as a building: about 1:80,
+  /// so a storey is >= ~4 cm. A 24 m block at 20 cm (1:120) was just a box.
+  double get roomMinM => BuildingCatalog.roomSteps
+      .firstWhere((m) => m >= sizeM / 80, orElse: () => BuildingCatalog.roomSteps.last);
+
   /// Plugin scale = largest model dimension in metres (see site_preview_screen).
   double scaleFor(PreviewMode mode,
           {double roomSizeM = BuildingCatalog.roomDefaultM}) =>
@@ -31,6 +36,7 @@ class BuildingType {
 
 class BuildingCatalog {
   static const roomDefaultM = 0.4;
+  static const roomSteps = [0.2, 0.4, 0.8, 1.5]; // tabletop .. coffee-table size
 
   static BuildingType get fallback => BuildingType(
         id: 'tower',

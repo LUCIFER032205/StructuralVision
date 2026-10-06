@@ -34,24 +34,26 @@ class _ResultScreenState extends State<ResultScreen> {
   int? _selected; // tapped detection index, shows its confidence
   bool _grading = false;
   bool _showDetails = false;
+  int? _walk; // detection index the walkthrough is on; null = not walking
+  List<int> get _numbers =>
+      List.generate(result.detections.length, (i) => result.numberOf(i));
 
-  /// Type a tape/ruler reading instead of measuring in AR. This is the only
-  /// route for wall, column and beam cracks: ARCore's vertical-plane mode
-  /// SIGSEGVs on the Vivo Y200, so AR measuring is floor/slab only.
-  Future<void> _enterLengthManually() async {
+  /// Tape reading for one crack: the only route for wall, column and beam
+  /// cracks, since ARCore's vertical-plane mode SIGSEGVs on the vivo.
+  Future<double?> _askLength(int i) async {
     final controller = TextEditingController();
-    final cm = await showDialog<double>(
+    return showDialog<double>(
       context: context,
       builder: (ctx) => AlertDialog(
         backgroundColor: AppColors.surface,
-        title: const Text('Crack length'),
+        title: Text('Crack ${result.numberOf(i)} length'),
         content: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text(
-              'Measure the crack end to end with a tape or ruler and enter it '
-              'in centimetres. This scales the photo so the width can be graded.',
+              'Measure this crack end to end with a tape and enter it in '
+              'centimetres. This scales the photo so its width can be graded.',
               style: AppTextStyles.bodySm,
             ),
             const SizedBox(height: 16),
@@ -60,13 +62,10 @@ class _ResultScreenState extends State<ResultScreen> {
               autofocus: true,
               keyboardType:
                   const TextInputType.numberWithOptions(decimal: true),
-              decoration: const InputDecoration(
-                labelText: 'Length',
-                suffixText: 'cm',
-                border: OutlineInputBorder(),
-              ),
-              onSubmitted: (v) =>
-                  Navigator.of(ctx).pop(double.tryParse(v.trim())),
+              decoration:
+                  const InputDecoration(labelText: 'Length', suffixText: 'cm'),
+              onSubmitted: (v) => Navigator.of(ctx)
+                  .pop(double.tryParse(v.trim().replaceAll(',', '.'))),
             ),
           ],
         ),
@@ -75,26 +74,55 @@ class _ResultScreenState extends State<ResultScreen> {
               onPressed: () => Navigator.of(ctx).pop(),
               child: const Text('Cancel')),
           FilledButton(
-            onPressed: () => Navigator.of(ctx)
-                .pop(double.tryParse(controller.text.trim())),
+            onPressed: () => Navigator.of(ctx).pop(
+                double.tryParse(controller.text.trim().replaceAll(',', '.'))),
             child: const Text('Grade'),
           ),
         ],
       ),
     );
+  }
+
+  Future<void> _measure(int i, {required bool ar}) async {
+    final double? cm;
+    if (ar) {
+      final photo = await _image;
+      if (!mounted) return;
+      cm = await Navigator.of(context).push<double>(MaterialPageRoute(
+          builder: (_) =>
+              ArScreen(result: result, photo: photo, measureCrack: i)));
+    } else {
+      cm = await _askLength(i);
+    }
     if (cm == null || !mounted) return;
     if (cm <= 0 || cm > 1000) {
       _snack('Enter a length between 0 and 1000 cm');
       return;
     }
+    await _send(() => scanApi.submitCrackMeasurement(
+        result.id, result.detections[i].id, cm!));
+  }
+
+  Future<void> _setStatus(int i, String status) => _send(() =>
+      scanApi.setCrackStatus(result.id, result.detections[i].id, status));
+
+  /// One request, then redraw and, mid-walkthrough, move to the next crack.
+  Future<void> _send(Future<ScanResult> Function() call) async {
     setState(() => _grading = true);
     try {
-      final updated = await scanApi.submitMeasurement(result.id, cm);
-      if (mounted) setState(() => result = updated);
+      final updated = await call();
+      if (!mounted) return;
+      setState(() {
+        result = updated;
+        if (_walk != null) {
+          _walk = result.nextToMeasure;
+          if (_walk == null) _snack('All cracks done');
+        }
+      });
     } on MeasurementRejected catch (e) {
       _snack(e.message, seconds: 5);
     } catch (e) {
-      _snack('Could not grade measurement: $e');
+      _snack('Could not save: $e');
     } finally {
       if (mounted) setState(() => _grading = false);
     }
@@ -107,16 +135,56 @@ class _ResultScreenState extends State<ResultScreen> {
     }
   }
 
-  Future<void> _openAr({bool measure = false}) async {
+  Future<void> _openAr() async {
     // Already decoded for the screen above; AR shows it as the "find this
     // crack" reference, since the live view has no idea which crack it is.
     final photo = await _image;
     if (!mounted) return;
-    final updated = await Navigator.of(context).push<ScanResult>(
-        MaterialPageRoute(
-            builder: (_) => ArScreen(
-                result: result, photo: photo, startMeasuring: measure)));
-    if (updated != null && mounted) setState(() => result = updated);
+    await Navigator.of(context).push(MaterialPageRoute(
+        builder: (_) => ArScreen(result: result, photo: photo)));
+  }
+
+  /// Per-crack actions from a Details row.
+  Future<void> _crackActions(int i) async {
+    final d = result.detections[i];
+    final pick = await showModalBottomSheet<String>(
+      context: context,
+      backgroundColor: AppColors.surface,
+      showDragHandle: true,
+      builder: (ctx) {
+        Widget tile(String v, IconData icon, String title, String sub) =>
+            ListTile(
+              contentPadding:
+                  const EdgeInsets.symmetric(horizontal: kPagePadding),
+              leading: Icon(icon, color: AppColors.accent),
+              title: Text(title, style: AppTextStyles.titleMd),
+              subtitle: Text(sub, style: AppTextStyles.bodySm),
+              onTap: () => Navigator.of(ctx).pop(v),
+            );
+        return SafeArea(
+          child: Column(mainAxisSize: MainAxisSize.min, children: [
+            tile('ar', Icons.view_in_ar, 'Measure in AR',
+                'Floor and slab cracks'),
+            tile('tape', Icons.edit_outlined, 'Enter length',
+                'Walls, columns, beams, measured with a tape'),
+            if (!d.isSkipped)
+              tile('skipped', Icons.redo_rounded, 'Skip',
+                  'Keep it, mark it not measured'),
+            if (!d.isDismissed)
+              tile('not_crack', Icons.block_rounded, 'Not a crack',
+                  'Remove a false alarm'),
+            if (!d.isTodo)
+              tile('todo', Icons.undo_rounded, 'Reset', 'Back to to-do'),
+          ]),
+        );
+      },
+    );
+    if (pick == null || !mounted) return;
+    if (pick == 'ar' || pick == 'tape') {
+      await _measure(i, ar: pick == 'ar');
+    } else {
+      await _setStatus(i, pick);
+    }
   }
 
   void _onImageTap(Offset p) {
@@ -161,7 +229,7 @@ class _ResultScreenState extends State<ResultScreen> {
 
     final risk  = result.riskLevel ?? 'LOW';
     final color = riskColors[risk] ?? AppColors.textMuted;
-    final noCracks = result.detections.isEmpty;
+    final noCracks = result.activeBySize.isEmpty;
 
     return Scaffold(
       backgroundColor: AppColors.bg,
@@ -212,7 +280,8 @@ class _ResultScreenState extends State<ResultScreen> {
                             height: img.height.toDouble(),
                             child: CustomPaint(
                               painter: CrackOverlayPainter(img,
-                                  result.detections, color, _selected),
+                                  result.detections, color, _walk ?? _selected,
+                                  numbers: _numbers),
                             ),
                           ),
                         ),
@@ -267,7 +336,7 @@ class _ResultScreenState extends State<ResultScreen> {
                       Padding(
                         padding: const EdgeInsets.only(top: 8),
                         child: Text(
-                          'Crack ${_selected! + 1}: '
+                          'Crack ${result.numberOf(_selected!)}: '
                           '${(result.detections[_selected!].confidence * 100).toStringAsFixed(0)}% confident · '
                           '${result.detections[_selected!].crackType == 'paint' ? 'surface/paint' : 'structural'}',
                           style: AppTextStyles.bodyMd
@@ -275,25 +344,22 @@ class _ResultScreenState extends State<ResultScreen> {
                         ),
                       ),
 
-                    // Preliminary -> measured is the step that turns the
-                    // estimate into a standards-based grade; keep it the one
-                    // obvious button.
-                    if (!noCracks && !result.isMeasured) ...[
+                    if (_walk != null)
+                      _walkPanel(_walk!)
+                    else if (result.nextToMeasure != null) ...[
                       const SizedBox(height: 16),
                       FilledButton.icon(
-                        icon: _grading
-                            ? const SizedBox(
-                                width: 16,
-                                height: 16,
-                                child: CircularProgressIndicator(
-                                    strokeWidth: 2, color: AppColors.bg))
-                            : const Icon(Icons.straighten, size: 18),
-                        label: const Text('Measure crack'),
-                        onPressed: _grading ? null : _chooseMeasureMethod,
+                        icon: const Icon(Icons.straighten, size: 18),
+                        label: Text(result.measuredCount == 0
+                            ? 'Measure cracks'
+                            : 'Continue measuring'),
+                        onPressed: _grading
+                            ? null
+                            : () => setState(() => _walk = result.nextToMeasure),
                       ),
                     ],
 
-                    if (!noCracks) ...[
+                    if (result.detections.isNotEmpty) ...[
                       const SizedBox(height: 4),
                       TextButton(
                         onPressed: () =>
@@ -333,15 +399,83 @@ class _ResultScreenState extends State<ResultScreen> {
 
   String _summary(bool noCracks) {
     if (noCracks) {
-      return 'No cracks detected. Hairlines in poor light can be missed, '
-          're-scan closer if you can see one.';
+      return result.detections.isEmpty
+          ? 'No cracks detected. Hairlines in poor light can be missed, '
+              're-scan closer if you can see one.'
+          : 'Every detection was dismissed as not a crack.';
     }
+    final active = result.activeBySize.length;
     if (result.isMeasured) {
-      return 'Measured: ${result.widthSummary} · ${result.gradeSummary}';
+      final worst = result.worstMeasured;
+      final head = worst == null
+          ? 'Measured: ${result.widthSummary} · ${result.gradeSummary}'
+          : 'Worst: crack ${result.numberOf(result.detections.indexOf(worst))}'
+              ' · ${worst.widthSummary} · ${result.gradeSummary}';
+      return '$head · ${result.measuredCount} of $active measured';
     }
-    final n = result.crackCount ?? 0;
     final area = ((result.crackAreaRatio ?? 0) * 100).toStringAsFixed(2);
-    return '$n crack${n == 1 ? '' : 's'} · $area% of surface · preliminary';
+    return '$active crack${active == 1 ? '' : 's'} · $area% of surface · preliminary';
+  }
+
+  String _rowText(CrackDetection d) {
+    if (d.isDismissed) return 'not a crack';
+    if (d.isSkipped) return 'skipped';
+    if (!d.isMeasured) return 'to do';
+    return '${d.lengthCm!.toStringAsFixed(0)} cm · ${d.widthSummary} · '
+        '${d.gradeSummary}';
+  }
+
+  Widget _walkPanel(int i) {
+    final active = result.activeBySize;
+    return Padding(
+      padding: const EdgeInsets.only(top: 16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Text(
+              'Crack ${result.numberOf(i)} · '
+              '${active.indexOf(i) + 1} of ${active.length}',
+              style: AppTextStyles.titleMd),
+          const SizedBox(height: 12),
+          Row(children: [
+            Expanded(
+              child: FilledButton.icon(
+                icon: const Icon(Icons.view_in_ar, size: 18),
+                label: const Text('AR'),
+                onPressed: _grading ? null : () => _measure(i, ar: true),
+              ),
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: FilledButton.icon(
+                icon: _grading
+                    ? const SizedBox(
+                        width: 16,
+                        height: 16,
+                        child: CircularProgressIndicator(
+                            strokeWidth: 2, color: AppColors.bg))
+                    : const Icon(Icons.edit_outlined, size: 18),
+                label: const Text('Tape'),
+                onPressed: _grading ? null : () => _measure(i, ar: false),
+              ),
+            ),
+          ]),
+          Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+            TextButton(
+                onPressed: _grading ? null : () => _setStatus(i, 'skipped'),
+                child: const Text('Skip')),
+            TextButton(
+                onPressed: _grading ? null : () => _setStatus(i, 'not_crack'),
+                child: const Text('Not a crack')),
+            TextButton(
+                onPressed: () => setState(() => _walk = null),
+                style: TextButton.styleFrom(
+                    foregroundColor: AppColors.textSecondary),
+                child: const Text('Stop')),
+          ]),
+        ],
+      ),
+    );
   }
 
   Widget _details() {
@@ -361,56 +495,40 @@ class _ResultScreenState extends State<ResultScreen> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
+        for (final i in result.bySize)
+          InkWell(
+            onTap: _grading ? null : () => _crackActions(i),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(vertical: 10),
+              child: Row(children: [
+                SizedBox(
+                  width: 28,
+                  child: Text('${result.numberOf(i)}',
+                      style: AppTextStyles.titleSm),
+                ),
+                Expanded(
+                  child: Text(_rowText(result.detections[i]),
+                      style: result.detections[i].isDismissed
+                          ? AppTextStyles.bodySm.copyWith(
+                              decoration: TextDecoration.lineThrough)
+                          : AppTextStyles.bodyMd),
+                ),
+                if (result.detections[i].riskLevel != null)
+                  RiskBadge(result.detections[i].riskLevel!),
+                const Icon(Icons.chevron_right_rounded,
+                    color: AppColors.textMuted),
+              ]),
+            ),
+          ),
         if (paint > 0)
           line(Icons.format_paint_outlined,
               '$paint of ${result.detections.length} look like surface/paint '
               'cracks, likely cosmetic (shown in grey).'),
         line(Icons.touch_app_outlined,
             "Tap a crack for the model's confidence. A fainter outline means "
-            'it is less sure.'),
+            'it is less sure. Tap a row to measure, skip or dismiss it.'),
       ],
     );
-  }
-
-  /// AR only sees floor/slab planes (vertical mode crashes ARCore on the
-  /// Y200), so walls, columns and beams go through the tape-measure route.
-  Future<void> _chooseMeasureMethod() async {
-    final useAr = await showModalBottomSheet<bool>(
-      context: context,
-      backgroundColor: AppColors.surface,
-      showDragHandle: true,
-      builder: (ctx) => SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.only(bottom: 8),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              ListTile(
-                contentPadding:
-                    const EdgeInsets.symmetric(horizontal: kPagePadding),
-                leading: const Icon(Icons.view_in_ar, color: AppColors.accent),
-                title: Text('Measure in AR', style: AppTextStyles.titleMd),
-                subtitle: Text('Floor and slab cracks',
-                    style: AppTextStyles.bodySm),
-                onTap: () => Navigator.of(ctx).pop(true),
-              ),
-              ListTile(
-                contentPadding:
-                    const EdgeInsets.symmetric(horizontal: kPagePadding),
-                leading:
-                    const Icon(Icons.edit_outlined, color: AppColors.accent),
-                title: Text('Enter length', style: AppTextStyles.titleMd),
-                subtitle: Text('Walls, columns and beams, measured with a tape',
-                    style: AppTextStyles.bodySm),
-                onTap: () => Navigator.of(ctx).pop(false),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-    if (useAr == null || !mounted) return;
-    useAr ? await _openAr(measure: true) : await _enterLengthManually();
   }
 
   Future<void> _shareReport() async {
@@ -443,8 +561,11 @@ class CrackOverlayPainter extends CustomPainter {
   final List<CrackDetection> detections;
   final Color            color;
   final int?             selected;
+  /// Crack number per detection index (largest = 1); null draws no numbers.
+  final List<int>?       numbers;
 
-  CrackOverlayPainter(this.image, this.detections, this.color, this.selected);
+  CrackOverlayPainter(this.image, this.detections, this.color, this.selected,
+      {this.numbers});
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -454,7 +575,7 @@ class CrackOverlayPainter extends CustomPainter {
 
     for (var i = 0; i < detections.length; i++) {
       final d = detections[i];
-      if (d.polygon.length < 3) continue;
+      if (d.polygon.length < 3 || d.isDismissed) continue;
       // Backend keeps detections at conf >= 0.4: map 0.4..1 -> 0..1 so a
       // weak detection draws thin and faint, a strong one thick and solid.
       final t = ((d.confidence - 0.4) / 0.6).clamp(0.0, 1.0);
@@ -468,7 +589,26 @@ class CrackOverlayPainter extends CustomPainter {
             ..color = isSel ? Colors.white : c.withValues(alpha: 0.45 + 0.55 * t)
             ..style = PaintingStyle.stroke
             ..strokeWidth = (isSel ? 5.0 : 1.5 + 3.5 * t) * unit);
+      final n = numbers?[i];
+      if (n != null) _label(canvas, '$n', path.getBounds().topLeft, unit, isSel);
     }
+  }
+
+  void _label(Canvas canvas, String text, Offset at, double unit, bool sel) {
+    final r = 16 * unit;
+    final centre = at.translate(-r * 0.4, -r * 0.4);
+    canvas.drawCircle(
+        centre, r, Paint()..color = sel ? Colors.white : Colors.black87);
+    final tp = TextPainter(
+      text: TextSpan(
+          text: text,
+          style: TextStyle(
+              color: sel ? Colors.black : Colors.white,
+              fontSize: 18 * unit,
+              fontWeight: FontWeight.w700)),
+      textDirection: TextDirection.ltr,
+    )..layout();
+    tp.paint(canvas, centre - Offset(tp.width / 2, tp.height / 2));
   }
 
   @override
@@ -476,5 +616,6 @@ class CrackOverlayPainter extends CustomPainter {
       old.image != image ||
       old.detections != detections ||
       old.selected != selected ||
-      old.color != color;
+      old.color != color ||
+      old.numbers != numbers;
 }

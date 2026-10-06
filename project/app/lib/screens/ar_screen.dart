@@ -18,7 +18,6 @@ import 'package:vector_math/vector_math_64.dart' as vm;
 
 import '../config.dart';
 import '../models.dart';
-import '../scan_api.dart';
 import 'result_screen.dart' show CrackOverlayPainter, riskColors;
 
 /// Live AR view: tap a detected plane on the inspected element to pin a
@@ -28,10 +27,12 @@ class ArScreen extends StatefulWidget {
   /// The scan photo, shown as a "find this crack" reference: the live view
   /// only sees the real crack once the camera is pointed at it.
   final ui.Image? photo;
-  final bool startMeasuring; // opened from "Measure crack for a grade"
+  /// Detection index to measure (one crack per visit: the route pops with
+  /// the tapped length in cm). Null = view mode, which only projects.
+  final int? measureCrack;
 
   const ArScreen(
-      {super.key, required this.result, this.photo, this.startMeasuring = false});
+      {super.key, required this.result, this.photo, this.measureCrack});
 
   @override
   State<ArScreen> createState() => _ArScreenState();
@@ -43,18 +44,10 @@ class _ArScreenState extends State<ArScreen> with SingleTickerProviderStateMixin
   ARAnchorManager? _anchors;
   bool _placed = false;
   bool _planeFound = false;
-  ARNode? _placedNode;
-  ARAnchor? _placedAnchor;
   late final AnimationController _pulseCtrl;
   late final Animation<double> _pulseAnim;
-  late bool _measuring = widget.startMeasuring;
+  late bool _measuring = widget.measureCrack != null;
   vm.Vector3? _measureStart;
-  // Small pin where the first tap landed, so point 1 is visible while aiming
-  // for the other end.
-  ARNode? _startPin;
-  ARAnchor? _startPinAnchor;
-  double? _measureCm;
-  bool _grading = false;
   // Wall planes: opt-in, because PlaneDetectionConfig.vertical SIGSEGVs in
   // libarcore_c.so on some devices (Vivo Y200, ARCore 1.54). A SIGSEGV can't
   // be caught in Dart, so instead a flag is written before switching and
@@ -68,26 +61,7 @@ class _ArScreenState extends State<ArScreen> with SingleTickerProviderStateMixin
   // Starts as the scan's preliminary result; replaced by the backend's
   // standards-graded result (JBDPA / BRE 251) after a measurement. Width
   // conversion and grading live only in backend inference.py.
-  late ScanResult _result = widget.result;
-
-  Future<void> _submitMeasurement(double lengthCm) async {
-    setState(() => _grading = true);
-    try {
-      final updated = await scanApi.submitMeasurement(_result.id, lengthCm);
-      if (mounted) setState(() => _result = updated);
-    } on MeasurementRejected catch (e) {
-      // The backend checks the implied frame size; taps that land on the floor
-      // behind a wall come back here instead of producing a bogus grade.
-      if (mounted) {
-        setState(() => _measureCm = null);
-        _toast(e.message, seconds: 5);
-      }
-    } catch (e) {
-      _toast('Could not grade measurement: $e');
-    } finally {
-      if (mounted) setState(() => _grading = false);
-    }
-  }
+  ScanResult get _result => widget.result;
 
   @override
   void initState() {
@@ -132,12 +106,13 @@ class _ArScreenState extends State<ArScreen> with SingleTickerProviderStateMixin
     // Recreating ARView drops any placed node.
     _placed = false;
     _planeFound = false;
-    _measuring = false;
+    // A wall-mode switch restarts the measurement, not the screen's purpose.
+    _measuring = widget.measureCrack != null;
     _measureStart = null;
-    _measureCm = null;
-    _startPin = null;        // the recreated ARView already dropped it
-    _startPinAnchor = null;
   }
+
+  /// Small pin where the first tap landed, so point 1 is visible while
+  /// aiming for the other end. The screen closes on the second tap.
 
   Future<void> _dropStartPin(vm.Matrix4 at) async {
     final anchor = ARPlaneAnchor(transformation: at);
@@ -147,20 +122,9 @@ class _ArScreenState extends State<ArScreen> with SingleTickerProviderStateMixin
       uri: _markerUrl,
       scale: vm.Vector3.all(0.05), // 5 cm: visible, small enough to aim past
     );
-    if (await _objects?.addNode(pin, planeAnchor: anchor) == true) {
-      _startPin = pin;
-      _startPinAnchor = anchor;
-    } else {
+    if (await _objects?.addNode(pin, planeAnchor: anchor) != true) {
       await _anchors?.removeAnchor(anchor);
     }
-  }
-
-  Future<void> _clearStartPin() async {
-    final pin = _startPin, anchor = _startPinAnchor;
-    _startPin = null;
-    _startPinAnchor = null;
-    if (pin != null) await _objects?.removeNode(pin);
-    if (anchor != null) await _anchors?.removeAnchor(anchor);
   }
 
   // Risk-colored pin GLBs generated into backend/static (see marker_*.glb)
@@ -169,7 +133,16 @@ class _ArScreenState extends State<ArScreen> with SingleTickerProviderStateMixin
 
   // Per-scan crack-overlay quad (transparent texture with the crack polygons),
   // built on demand by the backend. Only meaningful when cracks were found.
-  bool get _hasCracks => (widget.result.crackCount ?? 0) > 0;
+  bool get _hasCracks => widget.result.activeBySize.isNotEmpty;
+
+  /// Real size of the projected crack pattern once any crack is measured:
+  /// the photo's longest side times the photo's measured mm-per-pixel.
+  double? get _trueSizeM {
+    final mmpp = widget.result.trueSizeMmPerPx;
+    final photo = widget.photo;
+    if (mmpp == null || photo == null) return null;
+    return (photo.width > photo.height ? photo.width : photo.height) * mmpp / 1000;
+  }
   String get _overlayUrl =>
       '${AppConfig.apiBase}/scan/${widget.result.id}/overlay.glb';
 
@@ -227,14 +200,9 @@ class _ArScreenState extends State<ArScreen> with SingleTickerProviderStateMixin
         _dropStartPin(hit.worldTransform);
         _toast('Point 1 set — tap the other end of the crack');
       } else {
-        _clearStartPin();
-        setState(() {
-          _measureCm = _measureStart!.distanceTo(p) * 100;
-          _measureStart = null;
-          _measuring = false;
-        });
-        _setOverlayHidden(false);
-        _submitMeasurement(_measureCm!);
+        // One crack per visit: hand the length back; the result screen
+        // submits it and moves the walkthrough on.
+        Navigator.of(context).pop(_measureStart!.distanceTo(p) * 100);
       }
       return;
     }
@@ -258,31 +226,12 @@ class _ArScreenState extends State<ArScreen> with SingleTickerProviderStateMixin
       // plugin treats scale as scaleToUnits: largest dimension in meters
       // ponytail: fixed 1.0m overlay (0.5 read too small on device) — true
       // physical size needs ARCore Augmented Images, plugin doesn't expose it
-      scale: vm.Vector3.all(_hasCracks ? 1.0 : 0.2),
+      scale: vm.Vector3.all(_hasCracks ? (_trueSizeM ?? 1.0) : 0.2),
     );
-    if (await _objects?.addNode(node, planeAnchor: anchor) == true) {
-      _placedNode = node;
-      _placedAnchor = anchor;
-    } else {
+    if (await _objects?.addNode(node, planeAnchor: anchor) != true) {
       await _anchors?.removeAnchor(anchor);
       setState(() => _placed = false);
       _toast('Marker failed to load — check backend connection');
-    }
-  }
-
-  // The placed overlay quad swallows AR taps (node hits don't reach
-  // onPlaneOrPointTap), so it has to come off while measuring. Removing it
-  // left the user with no guide at all, which is half of why measurements
-  // landed on the wrong surface — the on-screen measure guide below replaces
-  // it for the duration.
-  Future<void> _setOverlayHidden(bool hidden) async {
-    final node = _placedNode;
-    if (node == null) return;
-    if (hidden) {
-      await _objects?.removeNode(node);
-    } else {
-      await _objects?.addNode(node,
-          planeAnchor: _placedAnchor as ARPlaneAnchor?);
     }
   }
 
@@ -309,13 +258,7 @@ class _ArScreenState extends State<ArScreen> with SingleTickerProviderStateMixin
   Widget build(BuildContext context) {
     final risk = _result.riskLevel ?? 'LOW';
     final color = riskColors[risk] ?? Colors.grey;
-    // Hand the (possibly re-graded) scan back so the result screen updates.
-    return PopScope(
-      canPop: false,
-      onPopInvokedWithResult: (didPop, _) {
-        if (!didPop) Navigator.of(context).pop(_result);
-      },
-      child: Scaffold(
+    return Scaffold(
       appBar: AppBar(
         title: const Text('AR inspection'),
         actions: [
@@ -330,21 +273,6 @@ class _ArScreenState extends State<ArScreen> with SingleTickerProviderStateMixin
               onPressed: _toggleWallMode,
             ),
         ],
-      ),
-      floatingActionButton: FloatingActionButton.extended(
-        icon: Icon(_measuring ? Icons.close : Icons.straighten),
-        label: Text(_measuring ? 'Cancel' : 'Measure'),
-        onPressed: () {
-          setState(() {
-            _measuring = !_measuring;
-            _measureStart = null;
-            if (_measuring) {
-              _measureCm = null;
-            }
-          });
-          _clearStartPin();
-          _setOverlayHidden(_measuring);
-        },
       ),
       body: Stack(
         children: [
@@ -385,19 +313,10 @@ class _ArScreenState extends State<ArScreen> with SingleTickerProviderStateMixin
                     if (_measuring)
                       Text(
                           _measureStart == null
-                              ? (_hasCracks && widget.photo != null
-                                  ? 'Point the camera at the real crack shown '
-                                      'bottom-left, then tap one end of it'
-                                  : 'Point the camera at the crack, then tap '
-                                      'one end of it')
+                              ? 'Crack ${_result.numberOf(widget.measureCrack!)} of '
+                                  '${_result.activeBySize.length}: point the camera at '
+                                  'the real crack shown bottom-left, then tap one end'
                               : 'Now tap the other end of the same crack',
-                          style: const TextStyle(
-                              color: Colors.white,
-                              fontWeight: FontWeight.bold))
-                    else if (_measureCm != null)
-                      Text(
-                          'Measured: ${_measureCm!.toStringAsFixed(1)} cm'
-                          '${_grading ? ' · grading…' : _result.isMeasured ? ' · width ≈ ${_result.widthSummary} · ${_result.gradeSummary}' : ''}',
                           style: const TextStyle(
                               color: Colors.white,
                               fontWeight: FontWeight.bold))
@@ -428,6 +347,11 @@ class _ArScreenState extends State<ArScreen> with SingleTickerProviderStateMixin
                               ? 'Tap the inspected surface to project the crack pattern'
                               : 'Tap the inspected surface to pin a marker',
                           style: const TextStyle(
+                              color: Colors.white70,
+                              fontStyle: FontStyle.italic))
+                    else if (_hasCracks && _trueSizeM == null)
+                      const Text('Not to scale — measure a crack to show real size',
+                          style: TextStyle(
                               color: Colors.white70,
                               fontStyle: FontStyle.italic)),
                   ],
@@ -479,6 +403,9 @@ class _ArScreenState extends State<ArScreen> with SingleTickerProviderStateMixin
                 photo: widget.photo!,
                 detections: _result.detections,
                 color: color,
+                selected: widget.measureCrack,
+                numbers: List.generate(
+                    _result.detections.length, (i) => _result.numberOf(i)),
               ),
             ),
 
@@ -513,7 +440,6 @@ class _ArScreenState extends State<ArScreen> with SingleTickerProviderStateMixin
             ),
         ],
       ),
-    ),
     );
   }
 }
@@ -525,15 +451,22 @@ class _CrackReference extends StatelessWidget {
   final ui.Image photo;
   final List<CrackDetection> detections;
   final Color color;
+  final int? selected;
+  final List<int> numbers;
   const _CrackReference(
-      {required this.photo, required this.detections, required this.color});
+      {required this.photo,
+      required this.detections,
+      required this.color,
+      required this.selected,
+      required this.numbers});
 
   Widget _image() => FittedBox(
         child: SizedBox(
           width: photo.width.toDouble(),
           height: photo.height.toDouble(),
           child: CustomPaint(
-              painter: CrackOverlayPainter(photo, detections, color, null)),
+              painter: CrackOverlayPainter(photo, detections, color, selected,
+                  numbers: numbers)),
         ),
       );
 

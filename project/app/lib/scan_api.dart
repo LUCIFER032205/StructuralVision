@@ -73,27 +73,35 @@ class ScanApi {
     return ScanResult.fromJson(jsonDecode(res.body) as Map<String, dynamic>);
   }
 
-  /// POST /scan/{id}/measurement — AR-measured crack length; backend converts
-  /// to width and grades it (JBDPA / BRE 251). Returns the updated scan.
-  Future<ScanResult> submitMeasurement(String scanId, double lengthCm) async {
+  /// POST /scan/{id}/cracks/{crackId}/measurement — one crack's real length
+  /// (AR two-tap or tape); backend grades that crack and the wall.
+  Future<ScanResult> submitCrackMeasurement(
+          String scanId, String crackId, double lengthCm) =>
+      _postCrack('$scanId/cracks/$crackId/measurement', {'length_cm': lengthCm});
+
+  /// POST /scan/{id}/cracks/{crackId}/status — skipped | not_crack | todo.
+  Future<ScanResult> setCrackStatus(String scanId, String crackId, String status) =>
+      _postCrack('$scanId/cracks/$crackId/status', {'status': status});
+
+  Future<ScanResult> _postCrack(String path, Map<String, dynamic> body) async {
     final res = await http
         .post(
-          Uri.parse('${AppConfig.apiBase}/scan/$scanId/measurement'),
+          Uri.parse('${AppConfig.apiBase}/scan/$path'),
           headers: {
             'Authorization': 'Bearer $_jwt',
             'Content-Type': 'application/json',
           },
-          body: jsonEncode({'length_cm': lengthCm}),
+          body: jsonEncode(body),
         )
         .timeout(const Duration(seconds: 30));
     if (res.statusCode == 422) {
-      final body = jsonDecode(res.body);
-      final detail = body is Map ? body['detail'] : null;
+      final decoded = jsonDecode(res.body);
+      final detail = decoded is Map ? decoded['detail'] : null;
       throw MeasurementRejected(
           detail is String ? detail : 'That measurement does not look right.');
     }
     if (res.statusCode != 200) {
-      throw Exception('measurement failed (${res.statusCode}): ${res.body}');
+      throw Exception('request failed (${res.statusCode}): ${res.body}');
     }
     return ScanResult.fromJson(jsonDecode(res.body) as Map<String, dynamic>);
   }

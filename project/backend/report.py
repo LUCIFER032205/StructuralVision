@@ -4,9 +4,10 @@ image with crack overlay, big color-coded risk, component, summary sentence.
 """
 import io
 
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFont
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.units import cm
+from reportlab.lib.utils import simpleSplit
 from reportlab.pdfgen import canvas
 
 _RISK_COLORS = {"HIGH": (0.86, 0.16, 0.16), "MEDIUM": (1.0, 0.59, 0.0), "LOW": (0.16, 0.67, 0.24)}
@@ -39,54 +40,106 @@ _STANDARD_REF = {
 }
 
 
-def _width_range(scan: dict, image: Image.Image) -> tuple[float, float]:
-    """Recompute the graded width's upper bound from the stored detections and
-    the photo, so no extra column is needed. -> (graded_mm, upper_mm)."""
-    import numpy as np
-    from inference import profile_width_px, _DISAGREE_FACTOR
-
-    graded = scan.get("crack_width_mm") or 0.0
-    dets = scan.get("detections") or []
-    if not dets or not graded:
-        return graded, graded
-    d = max(dets, key=lambda x: x.get("area_ratio") or 0)
-    poly = np.asarray(d.get("polygon") or [], dtype=float)
-    if not d.get("width_px") or len(poly) < 4:
-        return graded, graded
-    trough, _ = profile_width_px(np.asarray(image.convert("L")), poly)
-    if not trough:
-        return graded, graded
-    # graded came from the trough width, so scale it up by the mask ratio
-    upper = graded * d["width_px"] / trough
-    return graded, max(upper, graded)
+def numbered(detections: list[dict]) -> list[tuple[int, dict]]:
+    """(crack number, detection), largest first. Numbers run over every
+    detection so dismissing one never renumbers the rest (matches the app)."""
+    order = sorted(detections, key=lambda d: d.get("area_ratio") or 0, reverse=True)
+    return list(enumerate(order, 1))
 
 
-def _assessment(scan: dict, upper: float | None = None) -> str:
+def _assessment(scan: dict, rows: list[tuple[int, dict]]) -> str:
     if scan.get("risk_source") != "measured":
-        return "Assessment: PRELIMINARY (image area only) - measure crack in AR for a standards-based grade."
-    w = scan["crack_width_mm"]
-    width = (f"width {w:.2f}-{upper:.2f} mm" if upper and upper > w * _DISAGREE
-             else f"width {w:.2f} mm")
-    s = (f"Assessment: MEASURED - {width}, "
-         f"{scan.get('damage_standard') or 'n/a'} class {scan.get('damage_class') or '-'} "
-         f"({scan.get('damage_rating')})")
+        return "Assessment: PRELIMINARY (image area only) - measure the cracks for a standards-based grade."
+    grade = (f"{scan.get('damage_standard') or 'n/a'} class {scan.get('damage_class') or '-'} "
+             f"({scan.get('damage_rating')})")
+    measured = [(n, d) for n, d in rows if d.get("status") == "measured" and d.get("measurement")]
+    if not measured:   # graded the old way, one length for the whole scan
+        return f"Assessment: MEASURED - width {scan['crack_width_mm']:.2f} mm, {grade}"
+    # Same rule as inference.summarize (risk, then width) on the per-crack
+    # results: scans.crack_width_mm is a float4, so matching it back fails.
+    rank = {"LOW": 0, "MEDIUM": 1, "HIGH": 2}
+    worst_n, worst = max(measured, key=lambda nd: (rank[nd[1]["measurement"]["risk_level"]],
+                                                   nd[1]["measurement"]["width_mm"]))
+    s = (f"Assessment: MEASURED - worst crack #{worst_n}: "
+         f"{worst['measurement']['width_mm']:.2f} mm, {grade}")
     if scan.get("residual_capacity_pct") is not None:
         s += f", residual capacity {scan['residual_capacity_pct']:.0f}%"
-    return s
+    return s + f". {len(measured)} of {len(rows)} cracks measured."
 
 
-_DISAGREE = 2.0
-_RANGE_NOTE = ("Width is a range: the photo's intensity profile and the segmentation mask "
-               "disagree on this crack. Graded on the lower figure; verify with a crack gauge.")
+_RANGE_NOTE = ("A width range means the photo's intensity profile and the segmentation mask "
+               "disagree on that crack. Graded on the lower figure; verify with a crack gauge.")
 
 
-def _overlay(image_bytes: bytes, detections: list[dict]) -> Image.Image:
+def _width_text(m: dict) -> str:
+    if m.get("uncertain") and m["width_mm_upper"] > m["width_mm"]:
+        return f"{m['width_mm']:.2f}-{m['width_mm_upper']:.2f} mm"
+    return f"{m['width_mm']:.2f} mm"
+
+
+def _grade_text(m: dict) -> str:
+    if not m.get("standard"):
+        return "Cosmetic"
+    std = "BRE 251 cat." if m["standard"] == "BRE251" else "JBDPA"
+    return f"{std} {m['damage_class']} · {m['rating']}"
+
+
+def _crack_table(c, rows: list[tuple[int, dict]], y: float) -> float:
+    """# | Length | Width | Grade | Risk, one row per crack; spills onto a new
+    page when long. -> y below the table."""
+    w, h = A4
+    cols = (2 * cm, 3.2 * cm, 6 * cm, 10 * cm, 16.5 * cm)
+    c.setFillColorRGB(0, 0, 0)
+    c.setFont("Helvetica-Bold", 10)
+    for x, label in zip(cols, ("#", "Length", "Width", "Grade", "Risk")):
+        c.drawString(x, y, label)
+    c.setLineWidth(0.5)
+    c.line(2 * cm, y - 0.15 * cm, w - 2 * cm, y - 0.15 * cm)
+    c.setFont("Helvetica", 10)
+    for n, d in rows:
+        y -= 0.55 * cm
+        if y < 2 * cm:
+            c.showPage()
+            c.setFont("Helvetica", 10)
+            y = h - 2.5 * cm
+        c.setFillColorRGB(0, 0, 0)
+        c.drawString(cols[0], y, str(n))
+        m = d.get("measurement") if d.get("status") == "measured" else None
+        if m is None:
+            c.setFillColorRGB(0.45, 0.45, 0.45)
+            c.drawString(cols[1], y, "—")
+            c.drawString(cols[2], y, "—")
+            c.drawString(cols[3], y, "not measured")
+            continue
+        c.drawString(cols[1], y, f"{m['length_cm']:.0f} cm")
+        c.drawString(cols[2], y, _width_text(m))
+        c.drawString(cols[3], y, _grade_text(m))
+        c.setFillColorRGB(*_RISK_COLORS.get(m["risk_level"], (0.5, 0.5, 0.5)))
+        c.drawString(cols[4], y, m["risk_level"])
+    c.setFillColorRGB(0, 0, 0)
+    return y - 0.5 * cm
+
+
+def _wrapped(c, text: str, y: float, font: str, size: float, step: float) -> float:
+    """Draw text wrapped to the page's 2 cm margins. -> y below it."""
+    c.setFont(font, size)
+    for line in simpleSplit(text, font, size, A4[0] - 4 * cm):
+        c.drawString(2 * cm, y, line)
+        y -= step
+    return y
+
+
+def _overlay(image_bytes: bytes, rows: list[tuple[int, dict]]) -> Image.Image:
     img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
     draw = ImageDraw.Draw(img, "RGBA")
-    for d in detections:
+    font = ImageFont.load_default(size=max(14, img.width // 40))
+    for n, d in rows:
         poly = [tuple(p) for p in d["polygon"]]
         if len(poly) >= 3:
             draw.polygon(poly, fill=(255, 40, 40, 80), outline=(255, 40, 40, 255), width=3)
+            x, y = min(p[0] for p in poly), min(p[1] for p in poly)
+            draw.text((x, y), str(n), fill=(255, 255, 255, 255), font=font,
+                      stroke_width=3, stroke_fill=(0, 0, 0, 255), anchor="rb")
     return img
 
 
@@ -103,7 +156,10 @@ def _scan_page(c, scan: dict, image_bytes: bytes, title: str) -> None:
     c.drawString(2 * cm, h - 3.3 * cm, f"Scan ID: {scan['id']}")
     c.drawString(2 * cm, h - 3.9 * cm, f"Date: {scan.get('created_at', '')[:19].replace('T', ' ')}")
 
-    img = _overlay(image_bytes, scan.get("detections", []))
+    rows = [(n, d) for n, d in numbered(scan.get("detections", []))
+            if d.get("status") != "not_crack"]
+    dismissed = len(scan.get("detections", [])) - len(rows)
+    img = _overlay(image_bytes, rows)
     img_buf = io.BytesIO()
     img.save(img_buf, "JPEG", quality=85)
     img_buf.seek(0)
@@ -132,17 +188,23 @@ def _scan_page(c, scan: dict, image_bytes: bytes, title: str) -> None:
     c.drawString(2 * cm, y - 1.6 * cm, _summary(risk, scan.get("component_type"), scan.get("crack_count", 0)))
     c.setFont("Helvetica", 11)
     c.drawString(2 * cm, y - 2.4 * cm, f"Maintenance window: {_MAINTENANCE.get(risk, '')}")
-    graded, upper = ((0.0, 0.0) if scan.get("risk_source") != "measured"
-                     else _width_range(scan, Image.open(io.BytesIO(image_bytes))))
-    c.drawString(2 * cm, y - 3.2 * cm, _assessment(scan, upper))
-    below = y - 3.8 * cm
-    if upper > graded * _DISAGREE:
-        c.setFont("Helvetica-Oblique", 9)
-        c.drawString(2 * cm, below, _RANGE_NOTE)
-        below -= 0.5 * cm
+    below = _wrapped(c, _assessment(scan, rows), y - 3.2 * cm, "Helvetica", 11, 0.5 * cm)
+    below -= 0.3 * cm
+    if rows:
+        below = _crack_table(c, rows, below)
+    if any(d.get("measurement") and d["measurement"].get("uncertain") for _, d in rows):
+        below = _wrapped(c, _RANGE_NOTE, below, "Helvetica-Oblique", 9, 0.4 * cm)
+    if dismissed:
+        below = _wrapped(c, f"{dismissed} detection{'s' if dismissed != 1 else ''} "
+                            "dismissed as not a crack.", below, "Helvetica-Oblique", 9, 0.4 * cm)
+    standards = {d["measurement"]["standard"] for _, d in rows
+                 if d.get("measurement") and d["measurement"].get("standard")}
     if scan.get("damage_standard"):
-        c.setFont("Helvetica", 8)
-        c.drawString(2 * cm, below, _STANDARD_REF[scan["damage_standard"]])
+        standards.add(scan["damage_standard"])
+    c.setFont("Helvetica", 8)
+    for std in sorted(standards):
+        c.drawString(2 * cm, below, _STANDARD_REF[std])
+        below -= 0.4 * cm
 
 
 _RISK_ORDER = {"LOW": 0, "MEDIUM": 1, "HIGH": 2}

@@ -399,11 +399,10 @@ def profile_width_px(gray: np.ndarray, poly: np.ndarray,
 _DISAGREE_FACTOR = 2.0   # beyond this the two width estimates are reported as a range
 
 
-def width_from_measurement(length_cm: float, detections: list[dict],
-                           image_width: int | None = None,
+def width_from_measurement(length_cm: float, detection: dict,
                            gray: "np.ndarray | None" = None) -> dict | None:
-    """AR two-tap gives the real length of the largest crack; a pixel width
-    divided by its pixel length converts that to a width in mm.
+    """The real length of THIS crack (AR two-tap or tape) over its pixel length
+    gives mm per pixel; that turns its pixel width into mm.
 
     Two pixel widths are computed because neither is reliable alone (see
     profile_width_px): the photo's intensity trough, which is accurate on thin
@@ -411,13 +410,8 @@ def width_from_measurement(length_cm: float, detections: list[dict],
     is roughly right on wide cracks and grossly over-reads on hairlines. The
     trough drives the grade when it is readable; the mask is kept as the upper
     bound, and when they disagree past _DISAGREE_FACTOR the caller shows both
-    instead of a false-precision single number.
-
-    -> {"width_mm", "width_mm_upper", "uncertain", "crack_type"} or None."""
-    if not detections:
-        return None
-    d = max(detections, key=lambda d: d.get("area_ratio") or 0)
-    length_px, mask_width_px = d.get("length_px"), d.get("width_px")
+    instead of a false-precision single number."""
+    length_px, mask_width_px = detection.get("length_px"), detection.get("width_px")
     if not length_px or not mask_width_px:
         return None
 
@@ -426,7 +420,7 @@ def width_from_measurement(length_cm: float, detections: list[dict],
 
     photo_px, resolved = None, False
     if gray is not None:
-        poly = np.asarray(d.get("polygon") or [], dtype=float)
+        poly = np.asarray(detection.get("polygon") or [], dtype=float)
         if len(poly) >= 4:
             photo_px, resolved = profile_width_px(gray, poly)
 
@@ -438,7 +432,51 @@ def width_from_measurement(length_cm: float, detections: list[dict],
     return {"width_mm": width, "width_mm_upper": max(upper, width),
             "uncertain": uncertain, "resolved": resolved,
             "mm_per_px": mm_per_px,
-            "crack_type": d.get("crack_type") or "structural"}
+            "crack_type": detection.get("crack_type") or "structural"}
+
+
+def crack_measurement(length_cm: float, detection: dict, component_type: str | None,
+                      gray: "np.ndarray | None" = None) -> dict | None:
+    """One crack's stored result (crack_detections.measurement), or None when
+    the crack has no measurable length."""
+    w = width_from_measurement(length_cm, detection, gray)
+    if w is None:
+        return None
+    g = measured_risk(w["width_mm"], component_type, w["crack_type"])
+    return {"length_cm": length_cm, "width_mm": w["width_mm"],
+            "width_mm_upper": w["width_mm_upper"], "uncertain": w["uncertain"],
+            "resolved": w["resolved"], "mm_per_px": w["mm_per_px"],
+            "standard": g["standard"], "damage_class": g["damage_class"],
+            "rating": g["rating"], "residual_capacity_pct": g["residual_capacity_pct"],
+            "risk_level": g["risk_level"]}
+
+
+_RISK_RANK = {"LOW": 0, "MEDIUM": 1, "HIGH": 2}
+
+
+def summarize(detections: list[dict], component_type: str | None) -> dict:
+    """Scan-level (wall) fields after a per-crack measurement or status change.
+
+    'Not a crack' drops out of everything. With any crack measured the wall
+    takes the worst one's grade; with none, the preliminary area heuristic over
+    the cracks that remain, so dismissing a false alarm corrects the risk
+    before anything is measured."""
+    active = [d for d in detections if d.get("status") != "not_crack"]
+    measured = [d["measurement"] for d in active
+                if d.get("status") == "measured" and d.get("measurement")]
+    out = {"crack_count": len(active),
+           "crack_area_ratio": sum(d.get("area_ratio") or 0 for d in active)}
+    if measured:
+        worst = max(measured, key=lambda m: (_RISK_RANK[m["risk_level"]], m["width_mm"]))
+        out.update(risk_source="measured", risk_level=worst["risk_level"],
+                   crack_width_mm=worst["width_mm"], damage_standard=worst["standard"],
+                   damage_class=worst["damage_class"], damage_rating=worst["rating"],
+                   residual_capacity_pct=worst["residual_capacity_pct"])
+    else:
+        out.update(risk_source="preliminary", risk_level=compute_risk(active, component_type),
+                   crack_width_mm=None, damage_standard=None, damage_class=None,
+                   damage_rating=None, residual_capacity_pct=None)
+    return out
 
 
 def run_scan(image_bytes: bytes, component_type: str | None = None) -> dict:

@@ -19,6 +19,7 @@ that (ar_flutter_plugin_2 passes it to SceneView as scaleToUnits).
 """
 import json
 import shutil
+import struct
 import sys
 from pathlib import Path
 
@@ -43,6 +44,11 @@ def convert(kit_dir: Path, stem: str, storeys: int):
     mesh = trimesh.load(kit_dir / "Models/OBJ format" / f"{stem}.obj", force="mesh")
     texture = Image.open(kit_dir / "Models/GLB format/Textures/colormap.png").convert("RGBA")
     mesh.visual = trimesh.visual.TextureVisuals(uv=mesh.visual.uv, image=texture)
+    # The OBJ's vertex colours survive the visual swap as vertex_attributes and
+    # export as a custom "_color" attribute, which Filament (SceneView, inside
+    # ar_flutter_plugin_2) rejects outright: "Unrecognized vertex semantic",
+    # and the model never appears. The texture already carries the colour.
+    mesh.vertex_attributes.clear()
     # Models are Y-up already. Scale so the roof lands at storeys * STOREY_M.
     w, h, d = mesh.extents
     size_m = max(mesh.extents) * (storeys * STOREY_M) / h
@@ -50,12 +56,29 @@ def convert(kit_dir: Path, stem: str, storeys: int):
     return mesh, round(float(size_m), 1), footprint
 
 
+def filament_problems(path: Path) -> list[str]:
+    """What would stop SceneView's Filament loader drawing this GLB."""
+    raw = path.read_bytes()
+    chunk_len = struct.unpack("<I", raw[12:16])[0]
+    gltf = json.loads(raw[20:20 + chunk_len])
+    problems = []
+    for mesh in gltf["meshes"]:
+        for prim in mesh["primitives"]:
+            attrs = prim["attributes"]
+            problems += [f"custom attribute {a}" for a in attrs if a.startswith("_")]
+            if "NORMAL" not in attrs:
+                problems.append("no normals")
+    return problems
+
+
 def main(src: Path):
     OUT.mkdir(parents=True, exist_ok=True)
     entries = []
     for pid, name, kit, stem, storeys in PRESETS:
         mesh, size_m, footprint = convert(src / kit, stem, storeys)
-        mesh.export(OUT / f"{pid}.glb")
+        # Filament lights models with their normals; without them it has to
+        # guess, so ship them.
+        mesh.export(OUT / f"{pid}.glb", include_normals=True)
         entries.append({"id": pid, "name": name, "file": f"{pid}.glb",
                         "size_m": size_m, "storeys": storeys, "footprint": footprint})
     shutil.copyfile("static/building.glb", OUT / "tower.glb")
@@ -72,6 +95,7 @@ if __name__ == "__main__":
     for e in entries:
         m = trimesh.load(OUT / e["file"], force="mesh")
         scale = e["size_m"] / max(m.extents)
+        assert not filament_problems(OUT / e["file"]), (e["id"], filament_problems(OUT / e["file"]))
         if e["id"] != "tower":
             assert m.visual.material.baseColorTexture is not None, f"{e['id']} lost its texture"
             height = m.extents[1] * scale

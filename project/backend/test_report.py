@@ -80,22 +80,41 @@ def test_components_print_as_display_labels():
     assert "RC wall" in drawn and "rc_wall" not in drawn
 
 
-def test_measured_scan_report_shows_width_range():
-    # profile_width_px returns (width, resolved); the report once divided by
-    # the whole tuple and crashed every measured-scan PDF.
-    import numpy as np
-    from test_risk import _synth_crack
-    img, poly = _synth_crack([8.0, 6.0, 4.0, 2.0, 1.0, 0.5], np.random.default_rng(1))
-    buf = io.BytesIO()
-    Image.fromarray(img.astype(np.uint8)).save(buf, "JPEG", quality=95)
-    scan = {**_scan(1, "MEDIUM", "column"), "risk_source": "measured",
-            "crack_width_mm": 0.5, "damage_standard": "JBDPA", "damage_class": "II",
+def _meas(w, upper=None, uncertain=False, risk="MEDIUM"):
+    return {"length_cm": 42.0, "width_mm": w, "width_mm_upper": upper or w,
+            "uncertain": uncertain, "resolved": True, "mm_per_px": 0.3,
+            "standard": "JBDPA", "damage_class": "II", "rating": "Moderate",
+            "residual_capacity_pct": 60.0, "risk_level": risk}
+
+
+def _crack(area, status=None, meas=None):
+    return {"polygon": [[10, 10], [80, 20], [70, 60]], "area_ratio": area,
+            "crack_type": "structural", "status": status, "measurement": meas}
+
+
+def _measured_scan(dets):
+    return {**_scan(1, "MEDIUM", "rc_wall"), "risk_source": "measured",
+            "crack_width_mm": 0.61, "damage_standard": "JBDPA", "damage_class": "II",
             "damage_rating": "Moderate", "residual_capacity_pct": 60.0,
-            "detections": [{"polygon": poly.tolist(), "area_ratio": 0.01,
-                            "width_px": 40.0}]}
-    _, drawn, _ = _drawn([(scan, buf.getvalue())])
-    # mask (40 px) is far wider than the photo trough, so a range is reported
-    assert any(t.startswith("Assessment: MEASURED - width 0.50-") for t in drawn), drawn
+            "crack_count": sum(d["status"] != "not_crack" for d in dets),
+            "detections": dets}
+
+
+def test_per_crack_table_numbers_by_size_and_footnotes_dismissed():
+    scan = _measured_scan([_crack(0.02, "skipped"), _crack(0.05, "measured", _meas(0.61)),
+                           _crack(0.03, "not_crack")])
+    _, drawn, _ = _drawn([(scan, _jpeg())])
+    assert "42 cm" in drawn and "0.61 mm" in drawn and "JBDPA II · Moderate" in drawn
+    assert "not measured" in drawn
+    assert "1 detection dismissed as not a crack." in drawn
+    text = " ".join(drawn)   # the assessment wraps across lines
+    assert "worst crack #1" in text and "1 of 2 cracks measured" in text, drawn
+
+
+def test_uncertain_crack_width_prints_as_a_range():
+    scan = _measured_scan([_crack(0.05, "measured", _meas(0.5, 1.9, uncertain=True))])
+    _, drawn, _ = _drawn([(scan, _jpeg())])
+    assert "0.50-1.90 mm" in drawn, drawn
 
 
 def test_single_scan_pdf_still_one_page():

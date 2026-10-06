@@ -12,21 +12,26 @@ import 'package:ar_flutter_plugin_2/widgets/ar_view.dart';
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'dart:async';
+import 'dart:ui' as ui;
 
 import 'package:vector_math/vector_math_64.dart' as vm;
 
 import '../config.dart';
 import '../models.dart';
 import '../scan_api.dart';
-import 'result_screen.dart' show riskColors;
+import 'result_screen.dart' show CrackOverlayPainter, riskColors;
 
 /// Live AR view: tap a detected plane on the inspected element to pin a
 /// 3D marker anchor; risk + component info shown as an overlay badge.
 class ArScreen extends StatefulWidget {
   final ScanResult result;
+  /// The scan photo, shown as a "find this crack" reference: the live view
+  /// only sees the real crack once the camera is pointed at it.
+  final ui.Image? photo;
   final bool startMeasuring; // opened from "Measure crack for a grade"
 
-  const ArScreen({super.key, required this.result, this.startMeasuring = false});
+  const ArScreen(
+      {super.key, required this.result, this.photo, this.startMeasuring = false});
 
   @override
   State<ArScreen> createState() => _ArScreenState();
@@ -44,6 +49,10 @@ class _ArScreenState extends State<ArScreen> with SingleTickerProviderStateMixin
   late final Animation<double> _pulseAnim;
   late bool _measuring = widget.startMeasuring;
   vm.Vector3? _measureStart;
+  // Small pin where the first tap landed, so point 1 is visible while aiming
+  // for the other end.
+  ARNode? _startPin;
+  ARAnchor? _startPinAnchor;
   double? _measureCm;
   bool _grading = false;
   // Wall planes: opt-in, because PlaneDetectionConfig.vertical SIGSEGVs in
@@ -126,6 +135,32 @@ class _ArScreenState extends State<ArScreen> with SingleTickerProviderStateMixin
     _measuring = false;
     _measureStart = null;
     _measureCm = null;
+    _startPin = null;        // the recreated ARView already dropped it
+    _startPinAnchor = null;
+  }
+
+  Future<void> _dropStartPin(vm.Matrix4 at) async {
+    final anchor = ARPlaneAnchor(transformation: at);
+    if (await _anchors?.addAnchor(anchor) != true) return;
+    final pin = ARNode(
+      type: NodeType.webGLB,
+      uri: _markerUrl,
+      scale: vm.Vector3.all(0.05), // 5 cm: visible, small enough to aim past
+    );
+    if (await _objects?.addNode(pin, planeAnchor: anchor) == true) {
+      _startPin = pin;
+      _startPinAnchor = anchor;
+    } else {
+      await _anchors?.removeAnchor(anchor);
+    }
+  }
+
+  Future<void> _clearStartPin() async {
+    final pin = _startPin, anchor = _startPinAnchor;
+    _startPin = null;
+    _startPinAnchor = null;
+    if (pin != null) await _objects?.removeNode(pin);
+    if (anchor != null) await _anchors?.removeAnchor(anchor);
   }
 
   // Risk-colored pin GLBs generated into backend/static (see marker_*.glb)
@@ -189,8 +224,10 @@ class _ArScreenState extends State<ArScreen> with SingleTickerProviderStateMixin
       final p = hit.worldTransform.getTranslation();
       if (_measureStart == null) {
         setState(() => _measureStart = p);
+        _dropStartPin(hit.worldTransform);
         _toast('Point 1 set — tap the other end of the crack');
       } else {
+        _clearStartPin();
         setState(() {
           _measureCm = _measureStart!.distanceTo(p) * 100;
           _measureStart = null;
@@ -305,6 +342,7 @@ class _ArScreenState extends State<ArScreen> with SingleTickerProviderStateMixin
               _measureCm = null;
             }
           });
+          _clearStartPin();
           _setOverlayHidden(_measuring);
         },
       ),
@@ -347,8 +385,12 @@ class _ArScreenState extends State<ArScreen> with SingleTickerProviderStateMixin
                     if (_measuring)
                       Text(
                           _measureStart == null
-                              ? 'Measure: tap one end of the crack on the detected surface'
-                              : 'Measure: tap the other end',
+                              ? (_hasCracks && widget.photo != null
+                                  ? 'Point the camera at the real crack shown '
+                                      'bottom-left, then tap one end of it'
+                                  : 'Point the camera at the crack, then tap '
+                                      'one end of it')
+                              : 'Now tap the other end of the same crack',
                           style: const TextStyle(
                               color: Colors.white,
                               fontWeight: FontWeight.bold))
@@ -416,7 +458,7 @@ class _ArScreenState extends State<ArScreen> with SingleTickerProviderStateMixin
                         ),
                         child: Text(
                           _measureStart == null
-                              ? 'Aim at one end of the crack'
+                              ? 'Tap one end of the real crack'
                               : 'Now the other end',
                           style: const TextStyle(
                               color: Colors.white, fontSize: 13),
@@ -425,6 +467,18 @@ class _ArScreenState extends State<ArScreen> with SingleTickerProviderStateMixin
                     ],
                   ),
                 ),
+              ),
+            ),
+
+          if (widget.photo != null && _hasCracks)
+            Positioned(
+              left: 12,
+              // The AR view runs under the gesture bar; clear it.
+              bottom: 16 + MediaQuery.of(context).padding.bottom,
+              child: _CrackReference(
+                photo: widget.photo!,
+                detections: _result.detections,
+                color: color,
               ),
             ),
 
@@ -460,6 +514,80 @@ class _ArScreenState extends State<ArScreen> with SingleTickerProviderStateMixin
         ],
       ),
     ),
+    );
+  }
+}
+
+
+/// The scan photo with its detections outlined: what to look for in the live
+/// view. Tap to see it full size.
+class _CrackReference extends StatelessWidget {
+  final ui.Image photo;
+  final List<CrackDetection> detections;
+  final Color color;
+  const _CrackReference(
+      {required this.photo, required this.detections, required this.color});
+
+  Widget _image() => FittedBox(
+        child: SizedBox(
+          width: photo.width.toDouble(),
+          height: photo.height.toDouble(),
+          child: CustomPaint(
+              painter: CrackOverlayPainter(photo, detections, color, null)),
+        ),
+      );
+
+  @override
+  Widget build(BuildContext context) {
+    return Semantics(
+      button: true,
+      label: 'Scan photo with the crack outlined. Tap to enlarge',
+      excludeSemantics: true,
+      child: GestureDetector(
+        onTap: () => showDialog(
+          context: context,
+          builder: (ctx) => Dialog(
+            backgroundColor: Colors.black,
+            insetPadding: const EdgeInsets.all(16),
+            child: GestureDetector(
+              onTap: () => Navigator.of(ctx).pop(),
+              child: InteractiveViewer(maxScale: 6, child: _image()),
+            ),
+          ),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Container(
+              width: 112,
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(color: Colors.white, width: 2),
+                boxShadow: const [
+                  BoxShadow(color: Colors.black54, blurRadius: 8)
+                ],
+              ),
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(8),
+                child: AspectRatio(
+                  aspectRatio: photo.width / photo.height,
+                  child: _image(),
+                ),
+              ),
+            ),
+            const SizedBox(height: 4),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+              decoration: BoxDecoration(
+                color: Colors.black54,
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: const Text('Find this crack',
+                  style: TextStyle(color: Colors.white, fontSize: 12)),
+            ),
+          ],
+        ),
+      ),
     );
   }
 }

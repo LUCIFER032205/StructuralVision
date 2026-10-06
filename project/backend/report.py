@@ -53,7 +53,7 @@ def _width_range(scan: dict, image: Image.Image) -> tuple[float, float]:
     poly = np.asarray(d.get("polygon") or [], dtype=float)
     if not d.get("width_px") or len(poly) < 4:
         return graded, graded
-    trough = profile_width_px(np.asarray(image.convert("L")), poly)
+    trough, _ = profile_width_px(np.asarray(image.convert("L")), poly)
     if not trough:
         return graded, graded
     # graded came from the trough width, so scale it up by the mask ratio
@@ -133,7 +133,7 @@ def _scan_page(c, scan: dict, image_bytes: bytes, title: str) -> None:
     c.setFont("Helvetica", 11)
     c.drawString(2 * cm, y - 2.4 * cm, f"Maintenance window: {_MAINTENANCE.get(risk, '')}")
     graded, upper = ((0.0, 0.0) if scan.get("risk_source") != "measured"
-                     else _width_range(scan, img))
+                     else _width_range(scan, Image.open(io.BytesIO(image_bytes))))
     c.drawString(2 * cm, y - 3.2 * cm, _assessment(scan, upper))
     below = y - 3.8 * cm
     if upper > graded * _DISAGREE:

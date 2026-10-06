@@ -80,6 +80,24 @@ def test_components_print_as_display_labels():
     assert "RC wall" in drawn and "rc_wall" not in drawn
 
 
+def test_measured_scan_report_shows_width_range():
+    # profile_width_px returns (width, resolved); the report once divided by
+    # the whole tuple and crashed every measured-scan PDF.
+    import numpy as np
+    from test_risk import _synth_crack
+    img, poly = _synth_crack([8.0, 6.0, 4.0, 2.0, 1.0, 0.5], np.random.default_rng(1))
+    buf = io.BytesIO()
+    Image.fromarray(img.astype(np.uint8)).save(buf, "JPEG", quality=95)
+    scan = {**_scan(1, "MEDIUM", "column"), "risk_source": "measured",
+            "crack_width_mm": 0.5, "damage_standard": "JBDPA", "damage_class": "II",
+            "damage_rating": "Moderate", "residual_capacity_pct": 60.0,
+            "detections": [{"polygon": poly.tolist(), "area_ratio": 0.01,
+                            "width_px": 40.0}]}
+    _, drawn, _ = _drawn([(scan, buf.getvalue())])
+    # mask (40 px) is far wider than the photo trough, so a range is reported
+    assert any(t.startswith("Assessment: MEASURED - width 0.50-") for t in drawn), drawn
+
+
 def test_single_scan_pdf_still_one_page():
     pdf = report.build_pdf(_scan(1, "MEDIUM", "rc_wall"), _jpeg())
     assert pdf.startswith(b"%PDF") and pdf.count(_PAGE) == 1

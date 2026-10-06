@@ -28,7 +28,7 @@ def bad(msg, fix):
 
 print("\n1. Python + packages")
 ok(f"Python {sys.version.split()[0]} at {sys.executable}")
-for mod in ["fastapi", "uvicorn", "multipart", "ultralytics", "PIL", "numpy", "supabase", "jose"]:
+for mod in ["fastapi", "uvicorn", "multipart", "ultralytics", "PIL", "numpy", "supabase", "jose", "reportlab", "trimesh"]:
     try:
         importlib.import_module(mod)
         ok(mod)

@@ -1,59 +1,41 @@
-"""Build the AR site-preview catalogue from the Kenney city kits (CC0).
+"""Write the AR site-preview catalogue (static/buildings/manifest.json) from
+the shipped models, and check each one will actually load on the phone.
 
-The three presets are Kenney models, re-exported as GLB with the kit's
-colormap texture baked in (the kits' own .glb files ship the texture in a
-sibling folder, so they render untextured), and scaled so each storey is
-about 3.2 m.
+The house, apartment and office are CC-BY models from Sketchfab (see
+static/buildings/CREDITS.txt), shrunk for a budget phone with
+tools/shrink_glb.mjs: ground boards dropped, meshes merged per material
+(the apartment went from 1,295 draw calls to 3), opaque textures turned into
+JPEG and capped at 2048 px (1024 for the apartment), the apartment simplified
+from 197k to 160k triangles and made unlit (9 -> 29 fps at 80 cm: the phone
+is fill-rate bound, not triangle bound). To redo one, from a folder with
+`npm i @gltf-transform/cli@4` installed:
 
-Regenerate (only needed when swapping models):
+    DROP='^Plane001' node shrink_glb.mjs indian_house_model.glb house.glb 2048
+    DROP='^Object_11$' node shrink_glb.mjs modern_office_building.glb office.glb 2048
+    UNLIT=1 NO_TANGENTS=1 ERR=0.003 node shrink_glb.mjs procedural_hong_kong_building.glb apartment.glb 1024 0.35
 
-    curl -LO https://kenney.nl/media/pages/assets/city-kit-suburban/2c871b7af2-1745479373/kenney_city-kit-suburban_20.zip
-    curl -LO https://kenney.nl/media/pages/assets/city-kit-commercial/a742d900eb-1753115042/kenney_city-kit-commercial_2.1.zip
-    unzip -q kenney_city-kit-suburban_20.zip   -d src/suburban
-    unzip -q kenney_city-kit-commercial_2.1.zip -d src/commercial
-    python make_buildings.py src
+then run `python make_buildings.py`.
 
-Writes static/buildings/*.glb and static/buildings/manifest.json. `size_m`
-is the model's largest real dimension in metres — the app scales models by
-that (ar_flutter_plugin_2 passes it to SceneView as scaleToUnits).
+`size_m` is the model's largest real dimension in metres; the app scales by
+it (ar_flutter_plugin_2 passes it to SceneView as scaleToUnits).
 """
 import json
-import shutil
 import struct
-import sys
 from pathlib import Path
 
 import trimesh
-from PIL import Image
 
 OUT = Path("static/buildings")
-STOREY_M = 3.2
 
-# id, display name, kit folder, model stem, storeys.
-# Storey counts are what the model actually shows (window rows + ground
-# floor) — the label and the height have to agree with the geometry.
+# id, display name, file, storeys, metres per model unit.
+# The house and office were modelled in metres. The apartment's units are
+# arbitrary: 8.1 units for a G+6 block with roof tanks, so 3 m/unit puts its
+# floors at ~3 m and the roofline at ~24 m.
 PRESETS = [
-    ("house", "Independent house (G+1)", "suburban", "building-type-e", 2),
-    ("apartment", "Apartment block (G+3)", "commercial", "building-f", 4),
-    ("office", "Office building (G+6)", "commercial", "building-skyscraper-a", 7),
+    ("house", "Independent house (G+1)", "house.glb", 2, 1.0),
+    ("apartment", "Apartment block (G+6)", "apartment.glb", 7, 3.0),
+    ("office", "Office building (G+2)", "office.glb", 3, 1.0),
 ]
-
-
-def convert(kit_dir: Path, stem: str, storeys: int):
-    """OBJ + the kit colormap -> textured mesh, plus its real size in metres."""
-    mesh = trimesh.load(kit_dir / "Models/OBJ format" / f"{stem}.obj", force="mesh")
-    texture = Image.open(kit_dir / "Models/GLB format/Textures/colormap.png").convert("RGBA")
-    mesh.visual = trimesh.visual.TextureVisuals(uv=mesh.visual.uv, image=texture)
-    # The OBJ's vertex colours survive the visual swap as vertex_attributes and
-    # export as a custom "_color" attribute, which Filament (SceneView, inside
-    # ar_flutter_plugin_2) rejects outright: "Unrecognized vertex semantic",
-    # and the model never appears. The texture already carries the colour.
-    mesh.vertex_attributes.clear()
-    # Models are Y-up already. Scale so the roof lands at storeys * STOREY_M.
-    w, h, d = mesh.extents
-    size_m = max(mesh.extents) * (storeys * STOREY_M) / h
-    footprint = f"{w * size_m / max(mesh.extents):.0f} x {d * size_m / max(mesh.extents):.0f} m"
-    return mesh, round(float(size_m), 1), footprint
 
 
 def filament_problems(path: Path) -> list[str]:
@@ -61,27 +43,25 @@ def filament_problems(path: Path) -> list[str]:
     raw = path.read_bytes()
     chunk_len = struct.unpack("<I", raw[12:16])[0]
     gltf = json.loads(raw[20:20 + chunk_len])
-    problems = []
+    problems = [f"requires {e}" for e in gltf.get("extensionsRequired", [])]
     for mesh in gltf["meshes"]:
         for prim in mesh["primitives"]:
             attrs = prim["attributes"]
+            # trimesh exports OBJ vertex colours as "_color"; Filament rejects
+            # any custom attribute ("Unrecognized vertex semantic").
             problems += [f"custom attribute {a}" for a in attrs if a.startswith("_")]
             if "NORMAL" not in attrs:
                 problems.append("no normals")
     return problems
 
 
-def main(src: Path):
-    OUT.mkdir(parents=True, exist_ok=True)
+def main():
     entries = []
-    for pid, name, kit, stem, storeys in PRESETS:
-        mesh, size_m, footprint = convert(src / kit, stem, storeys)
-        # Filament lights models with their normals; without them it has to
-        # guess, so ship them.
-        mesh.export(OUT / f"{pid}.glb", include_normals=True)
-        entries.append({"id": pid, "name": name, "file": f"{pid}.glb",
-                        "size_m": size_m, "storeys": storeys, "footprint": footprint})
-    shutil.copyfile("static/building.glb", OUT / "tower.glb")
+    for pid, name, file, storeys, mpu in PRESETS:
+        w, h, d = trimesh.load(OUT / file).extents * mpu
+        entries.append({"id": pid, "name": name, "file": file,
+                        "size_m": round(float(max(w, h, d)), 1), "storeys": storeys,
+                        "footprint": f"{w:.0f} x {d:.0f} m"})
     entries.append({"id": "tower", "name": "Demo tower", "file": "tower.glb",
                     "size_m": 20.0, "storeys": 6, "footprint": "6 x 6 m"})
     (OUT / "manifest.json").write_text(json.dumps({"buildings": entries}, indent=2) + "\n")
@@ -89,16 +69,15 @@ def main(src: Path):
 
 
 if __name__ == "__main__":
-    entries = main(Path(sys.argv[1] if len(sys.argv) > 1 else "src"))
-    # Self-check: every file loads back, keeps its texture, stands upright,
-    # and its height matches the storey count it claims.
+    entries = main()
+    # Self-check: every model loads on Filament, stays phone-sized, and its
+    # height reads as the storeys it claims (2.8-4 m a floor, roof extras ok).
     for e in entries:
-        m = trimesh.load(OUT / e["file"], force="mesh")
-        scale = e["size_m"] / max(m.extents)
-        assert not filament_problems(OUT / e["file"]), (e["id"], filament_problems(OUT / e["file"]))
+        path = OUT / e["file"]
+        assert not filament_problems(path), (e["id"], filament_problems(path))
+        assert path.stat().st_size < 12_000_000, f"{e['id']} too big for the phone"
         if e["id"] != "tower":
-            assert m.visual.material.baseColorTexture is not None, f"{e['id']} lost its texture"
-            height = m.extents[1] * scale
-            assert abs(height - e["storeys"] * STOREY_M) < 0.1, (e["id"], height)
-            assert m.extents[1] == max(m.extents) or e["id"] == "house", f"{e['id']} not upright"
+            mpu = next(p[4] for p in PRESETS if p[0] == e["id"])
+            height = trimesh.load(path).extents[1] * mpu
+            assert 2.8 * e["storeys"] <= height <= 4.0 * e["storeys"] + 4, (e["id"], height)
     print("ok:", [(e["id"], e["size_m"], e["footprint"]) for e in entries])

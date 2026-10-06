@@ -17,7 +17,7 @@ datasets/
 
 # ── Executables / tools ───────────────────────────────────────────────────────
 # local binaries: ngrok.exe, jdk-17 (build JDK)
-tools/
+/tools/
 *.exe
 *.dll
 

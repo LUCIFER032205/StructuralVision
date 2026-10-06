@@ -73,17 +73,12 @@ def finish_scan(scan_id: str, result: dict, image_url: str | None = None):
         _conn().table("crack_detections").insert(detections).execute()
 
 
-def set_measurement(scan_id: str, width_mm: float, graded: dict):
-    """graded = inference.measured_risk(...) output."""
-    _conn().table("scans").update({
-        "risk_level": graded["risk_level"],
-        "risk_source": "measured",
-        "crack_width_mm": width_mm,
-        "damage_standard": graded["standard"],
-        "damage_class": graded["damage_class"],
-        "damage_rating": graded["rating"],
-        "residual_capacity_pct": graded["residual_capacity_pct"],
-    }).eq("id", scan_id).execute()
+def update_scan(scan_id: str, fields: dict):
+    _conn().table("scans").update(fields).eq("id", scan_id).execute()
+
+
+def update_detection(detection_id: str, fields: dict):
+    _conn().table("crack_detections").update(fields).eq("id", detection_id).execute()
 
 
 def fail_scan(scan_id: str, error: str):

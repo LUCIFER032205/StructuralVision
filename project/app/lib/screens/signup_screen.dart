@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../theme.dart';
-import 'login_screen.dart' show AuthMessage, credentialError;
+import 'login_screen.dart' show AuthMessage, authErrorText, credentialError;
 
 class SignupScreen extends StatefulWidget {
   const SignupScreen({super.key});
@@ -41,7 +41,10 @@ class _SignupScreenState extends State<SignupScreen> {
       // there is no session, so hand the email back to the sign-in screen.
       Navigator.of(context).pop(res.session == null ? email : null);
     } on AuthException catch (e) {
-      setState(() => _error = e.message);
+      // A 5xx on sign-up is almost always the confirmation email failing to send.
+      setState(() => _error = authErrorText(e,
+          serverError: "Couldn't send the confirmation email. "
+              'Try again in a few minutes.'));
     } catch (e) {
       setState(() => _error = '$e');
     } finally {

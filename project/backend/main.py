@@ -159,6 +159,8 @@ async def set_crack_status(scan_id: str, crack_id: str, s: CrackStatus,
                            user_id: str = Depends(current_user)):
     """Skip a crack, dismiss it as not a crack, or reset it to to-do."""
     scan, det = _crack(scan_id, crack_id, user_id)
+    if s.status == "skipped" and det.get("status") == "measured":
+        return _resummarize(scan, user_id)  # skip must not discard a measurement
     status = None if s.status == "todo" else s.status
     db.update_detection(crack_id, {"status": status, "measurement": None})
     det.update(status=status, measurement=None)

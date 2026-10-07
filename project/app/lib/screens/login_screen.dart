@@ -30,7 +30,7 @@ class _LoginScreenState extends State<LoginScreen> {
     try {
       await action();
     } on AuthException catch (e) {
-      setState(() => _error = e.message);
+      setState(() => _error = authErrorText(e));
     } catch (e) {
       setState(() => _error = '$e');
     } finally {
@@ -229,6 +229,29 @@ String? credentialError(String email, String password) {
   if (!email.contains('@')) return 'That email address looks incomplete';
   if (password.length < 6) return 'Password must be at least 6 characters';
   return null;
+}
+
+/// Supabase errors in plain words. A 5xx arrives as the raw JSON body and a
+/// network failure as a socket dump, neither of which a user can act on.
+String authErrorText(AuthException e,
+    {String serverError =
+        'The sign-in service had a problem. Try again in a few minutes.'}) {
+  if (e is AuthRetryableFetchException) {
+    return e.statusCode == null
+        ? "Can't reach the server. Check your internet connection."
+        : serverError;
+  }
+  return switch (e.code) {
+    'invalid_credentials' => 'Wrong email or password',
+    'email_not_confirmed' =>
+      'Confirm your email first. Check your inbox and spam folder.',
+    'user_already_exists' || 'email_exists' =>
+      'An account with this email already exists. Sign in instead.',
+    'over_email_send_rate_limit' =>
+      'Too many emails sent. Wait a few minutes and try again.',
+    'over_request_rate_limit' => 'Too many attempts. Wait a minute and try again.',
+    _ => e.message,
+  };
 }
 
 class AuthMessage extends StatelessWidget {

@@ -151,6 +151,9 @@ class _ResultScreenState extends State<ResultScreen> {
       context: context,
       backgroundColor: AppColors.surface,
       showDragHandle: true,
+      // Default cap is 9/16 of the screen: five rows overflowed and pushed
+      // Reset under the system nav bar.
+      isScrollControlled: true,
       builder: (ctx) {
         Widget tile(String v, IconData icon, String title, String sub) =>
             ListTile(
@@ -162,12 +165,14 @@ class _ResultScreenState extends State<ResultScreen> {
               onTap: () => Navigator.of(ctx).pop(v),
             );
         return SafeArea(
-          child: Column(mainAxisSize: MainAxisSize.min, children: [
+          child: SingleChildScrollView(
+              child: Column(mainAxisSize: MainAxisSize.min, children: [
             tile('ar', Icons.view_in_ar, 'Measure in AR',
                 'Floor and slab cracks'),
             tile('tape', Icons.edit_outlined, 'Enter length',
                 'Walls, columns, beams, measured with a tape'),
-            if (!d.isSkipped)
+            // Backend ignores a skip on a measured crack, so don't offer it.
+            if (!d.isSkipped && !d.isMeasured)
               tile('skipped', Icons.redo_rounded, 'Skip',
                   'Keep it, mark it not measured'),
             if (!d.isDismissed)
@@ -175,7 +180,7 @@ class _ResultScreenState extends State<ResultScreen> {
                   'Remove a false alarm'),
             if (!d.isTodo)
               tile('todo', Icons.undo_rounded, 'Reset', 'Back to to-do'),
-          ]),
+          ])),
         );
       },
     );
@@ -382,8 +387,14 @@ class _ResultScreenState extends State<ResultScreen> {
                         duration: const Duration(milliseconds: 200),
                         curve: Curves.easeOut,
                         alignment: Alignment.topCenter,
+                        // Capped so a wall with many cracks scrolls here
+                        // instead of squeezing the photo out.
                         child: _showDetails
-                            ? _details()
+                            ? ConstrainedBox(
+                                constraints: BoxConstraints(
+                                    maxHeight:
+                                        MediaQuery.of(context).size.height * 0.3),
+                                child: SingleChildScrollView(child: _details()))
                             : const SizedBox(width: double.infinity),
                       ),
                     ],
@@ -596,7 +607,10 @@ class CrackOverlayPainter extends CustomPainter {
 
   void _label(Canvas canvas, String text, Offset at, double unit, bool sel) {
     final r = 16 * unit;
-    final centre = at.translate(-r * 0.4, -r * 0.4);
+    // Clamped inside the photo: a crack touching the top edge cut its badge in half.
+    final centre = Offset(
+        (at.dx - r * 0.4).clamp(r, image.width - r).toDouble(),
+        (at.dy - r * 0.4).clamp(r, image.height - r).toDouble());
     canvas.drawCircle(
         centre, r, Paint()..color = sel ? Colors.white : Colors.black87);
     final tp = TextPainter(

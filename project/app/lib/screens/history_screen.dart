@@ -35,9 +35,11 @@ class _HistoryScreenState extends State<HistoryScreen> {
           .timeout(const Duration(seconds: 15));
       if (res.statusCode != 200) throw Exception('photo download failed');
       if (!mounted) return;
-      Navigator.of(context).push(MaterialPageRoute(
+      await Navigator.of(context).push(MaterialPageRoute(
           builder: (_) =>
               ResultScreen(result: full, imageBytes: res.bodyBytes)));
+      // Measure / skip / dismiss on that screen changes the risk shown here.
+      if (mounted) setState(() => _scans = scanApi.listScans());
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context)

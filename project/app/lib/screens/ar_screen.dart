@@ -19,6 +19,7 @@ import 'package:vector_math/vector_math_64.dart' as vm;
 import '../config.dart';
 import '../models.dart';
 import 'result_screen.dart' show CrackOverlayPainter, riskColors;
+import 'component_select_sheet.dart';
 
 /// Live AR view: tap a detected plane on the inspected element to pin a
 /// 3D marker anchor; risk + component info shown as an overlay badge.
@@ -299,7 +300,7 @@ class _ArScreenState extends State<ArScreen> with SingleTickerProviderStateMixin
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
-                      '$risk RISK${_result.isMeasured ? '' : ' (preliminary)'} — ${_result.componentType ?? '?'}',
+                      '$risk RISK${_result.isMeasured ? '' : ' (preliminary)'} — ${ComponentSelectSheet.labelFor(_result.componentType)}',
                       style: const TextStyle(
                           color: Colors.white,
                           fontWeight: FontWeight.bold,
@@ -324,10 +325,10 @@ class _ArScreenState extends State<ArScreen> with SingleTickerProviderStateMixin
                       Row(
                         children: [
                           const SizedBox(
-                            width: 14,
-                            height: 14,
+                            width: 18,
+                            height: 18,
                             child: CircularProgressIndicator(
-                                strokeWidth: 2, color: Colors.white70),
+                                strokeWidth: 2.5, color: Colors.white),
                           ),
                           const SizedBox(width: 8),
                           Expanded(

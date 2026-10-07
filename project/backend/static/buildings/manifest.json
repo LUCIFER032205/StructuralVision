@@ -26,11 +26,11 @@
     },
     {
       "id": "tower",
-      "name": "Demo tower",
+      "name": "High-rise tower (~40 floors)",
       "file": "tower.glb",
-      "size_m": 20.0,
-      "storeys": 6,
-      "footprint": "6 x 6 m"
+      "size_m": 161.4,
+      "storeys": 40,
+      "footprint": "56 x 56 m"
     }
   ]
 }

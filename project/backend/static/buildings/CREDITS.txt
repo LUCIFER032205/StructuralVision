@@ -6,10 +6,12 @@ apartment.glb  "Procedural Hong Kong building" by uday (@udayjeet)
                https://sketchfab.com/3d-models/procedural-hong-kong-building-528a732e84c44fd49c4726f341014a23
 office.glb     "Modern Office Building" by CN Entertainment (@cn-entertainment)
                https://sketchfab.com/3d-models/modern-office-building-3f54b8d7a7064b0da523c49187efcf60
+tower.glb      "Hi rise apartment building" by aitortilla01 (@aitortilla01)
+               https://sketchfab.com/3d-models/hi-rise-apartment-building-f8c0a550cd1e441f85b46caeba6632f3
 
-Changes made: ground boards removed, meshes merged, textures converted to
-JPEG and resized, the apartment's geometry simplified (197k -> 160k
-triangles) and its materials made unlit. See make_buildings.py for the
+Changes made to the house, apartment and office: ground boards removed,
+meshes merged, textures converted to JPEG and resized, the apartment's
+geometry simplified (197k -> 160k triangles) and its materials made unlit. See make_buildings.py for the
 exact steps.
 
-tower.glb is the project's own earlier model.
+The tower is unchanged apart from the file name.

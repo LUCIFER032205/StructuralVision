@@ -1,7 +1,7 @@
 """Write the AR site-preview catalogue (static/buildings/manifest.json) from
 the shipped models, and check each one will actually load on the phone.
 
-The house, apartment and office are CC-BY models from Sketchfab (see
+The house, apartment, office and tower are CC-BY models from Sketchfab (see
 static/buildings/CREDITS.txt), shrunk for a budget phone with
 tools/shrink_glb.mjs: ground boards dropped, meshes merged per material
 (the apartment went from 1,295 draw calls to 3), opaque textures turned into
@@ -35,6 +35,9 @@ PRESETS = [
     ("house", "Independent house (G+1)", "house.glb", 2, 1.0),
     ("apartment", "Apartment block (G+6)", "apartment.glb", 7, 3.0),
     ("office", "Office building (G+2)", "office.glb", 3, 1.0),
+    # Modelled in cm: 161 m to the crown, ~40 slab levels at 3.7 m. Shipped
+    # as downloaded (3.6k triangles, one 1024 px texture, 1.3 MB).
+    ("tower", "High-rise tower (~40 floors)", "tower.glb", 40, 0.01),
 ]
 
 
@@ -62,8 +65,6 @@ def main():
         entries.append({"id": pid, "name": name, "file": file,
                         "size_m": round(float(max(w, h, d)), 1), "storeys": storeys,
                         "footprint": f"{w:.0f} x {d:.0f} m"})
-    entries.append({"id": "tower", "name": "Demo tower", "file": "tower.glb",
-                    "size_m": 20.0, "storeys": 6, "footprint": "6 x 6 m"})
     (OUT / "manifest.json").write_text(json.dumps({"buildings": entries}, indent=2) + "\n")
     return entries
 
@@ -76,8 +77,7 @@ if __name__ == "__main__":
         path = OUT / e["file"]
         assert not filament_problems(path), (e["id"], filament_problems(path))
         assert path.stat().st_size < 12_000_000, f"{e['id']} too big for the phone"
-        if e["id"] != "tower":
-            mpu = next(p[4] for p in PRESETS if p[0] == e["id"])
-            height = trimesh.load(path).extents[1] * mpu
-            assert 2.8 * e["storeys"] <= height <= 4.0 * e["storeys"] + 4, (e["id"], height)
+        mpu = next(p[4] for p in PRESETS if p[0] == e["id"])
+        height = trimesh.load(path).extents[1] * mpu
+        assert 2.8 * e["storeys"] <= height <= 4.0 * e["storeys"] + 4, (e["id"], height)
     print("ok:", [(e["id"], e["size_m"], e["footprint"]) for e in entries])

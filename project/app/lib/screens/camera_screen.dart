@@ -8,6 +8,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../building_catalog.dart';
+import '../photo_orientation.dart';
 import '../scan_api.dart';
 import '../theme.dart';
 import 'batch_screen.dart';
@@ -28,6 +29,9 @@ const _burstInterval   = Duration(milliseconds: 2500);
 const _burstMaxShots   = 8;
 const _multiMaxShots   = 12;
 
+/// What the shutter does, picked from the Photo · Multi · Video switch.
+enum _Mode { photo, multi, video }
+
 /// One queued shot in multi-capture mode: the photo plus the component the
 /// user had selected when it was taken, so one session can mix wall, column…
 class _Shot {
@@ -46,7 +50,8 @@ class _CameraScreenState extends State<CameraScreen> {
   Timer?  _burstTimer;
   List<Uint8List>? _burstShots;
   String? _burstComponent;
-  List<_Shot>? _shots;   // non-null while multi-capture is on
+  List<_Shot>? _shots;   // non-null exactly while _mode is multi
+  _Mode _mode = _Mode.photo;
   double _zoom = 1.0;
   double _zoomMin = 1.0, _zoomMax = 1.0;
   double _zoomAtGestureStart = 1.0;
@@ -159,14 +164,13 @@ class _CameraScreenState extends State<CameraScreen> {
           _showSnack('Max $_multiMaxShots photos — tap ✓ to analyze');
           return;
         }
-        final bytes = await (await ctrl.takePicture()).readAsBytes();
+        final bytes = await takeUprightPicture(ctrl);
         if (!mounted) return;
         setState(() => shots.add(_Shot(bytes, component)));
         return;
       }
       setState(() => _status = 'Capturing…');
-      final shot = await ctrl.takePicture();
-      await _analyze(await shot.readAsBytes(), componentType: component);
+      await _analyze(await takeUprightPicture(ctrl), componentType: component);
     } catch (e) {
       _showError(e);
     } finally {
@@ -235,8 +239,7 @@ class _CameraScreenState extends State<CameraScreen> {
       return;
     }
     try {
-      final shot = await ctrl.takePicture();
-      shots.add(await shot.readAsBytes());
+      shots.add(await takeUprightPicture(ctrl));
       if (mounted) setState(() {});
       if (shots.length >= _burstMaxShots) await _stopBurst();
     } catch (_) {}
@@ -270,25 +273,23 @@ class _CameraScreenState extends State<CameraScreen> {
   }
 
   // ── Multi-capture: manual shutter, component re-pickable per shot ───────
-  /// Enter multi-capture, or finish it and analyze the queue.
-  Future<void> _toggleMulti() async {
-    if (_shots == null) {
-      final ctrl = _controller;
-      if (ctrl == null || !ctrl.value.isInitialized ||
-          _status != null || _burstShots != null) {
-        return;
-      }
-      HapticFeedback.mediumImpact();
-      setState(() => _shots = []);
+  void _setMode(_Mode m) {
+    if (m == _mode || _status != null || _burstShots != null) return;
+    if (_shots?.isNotEmpty ?? false) {
+      _showSnack('Analyze or remove the queued photos first');
       return;
     }
-    await _finishMulti();
+    HapticFeedback.selectionClick();
+    setState(() {
+      _mode  = m;
+      _shots = m == _Mode.multi ? [] : null;
+    });
   }
 
   Future<void> _finishMulti() async {
     final shots = _shots;
-    setState(() => _shots = null);
     if (shots == null || shots.isEmpty) return;
+    setState(() => _shots = []); // stay in Multi for the next set
     try {
       setState(() => _status = 'Uploading ${shots.length} photos…');
       final ids = <String>[];
@@ -309,18 +310,34 @@ class _CameraScreenState extends State<CameraScreen> {
     setState(() => shots.removeAt(i));
   }
 
-  Future<void> _openBatch(List<String> scanIds) async {
+  /// Every screen opened from here can reach AR (history -> result -> AR,
+  /// batch -> result -> AR, site preview), and ARCore SIGSEGVs in
+  /// libarcore_c.so if CameraX still owns the camera: CameraX answers
+  /// ERROR_CAMERA_IN_USE by reopening it a second later and taking it back.
+  /// So the camera is released for every push, not just some of them.
+  Future<void> _pushWithoutCamera(Widget screen) async {
     if (!mounted) return;
     final c = _controller;
     _controller = null;
+    setState(() {});
     await c?.dispose();
     if (!mounted) return;
-    await Navigator.of(context).push(
-        MaterialPageRoute(builder: (_) => BatchScreen(scanIds: scanIds)));
+    await Navigator.of(context)
+        .push(MaterialPageRoute(builder: (_) => screen));
+    // The reverse race: ARCore closes its camera session on a background
+    // thread after the AR route is gone. Reopening CameraX straight away
+    // evicts that session mid-close and ARCore's own teardown throws
+    // "Session has been closed" uncaught, killing the app (3 crashes on the
+    // vivo 2026-10-06, each ~0.3 s after CameraX began OPENING).
+    // ponytail: fixed delay, the plugin gives no "camera released" signal;
+    // a CameraManager.AvailabilityCallback channel would make it exact.
+    await Future.delayed(const Duration(milliseconds: 1500));
     if (mounted) _init();
   }
 
-  // Camera must be released before ARCore opens (holding it SIGSEGVs libarcore_c.so).
+  Future<void> _openBatch(List<String> scanIds) =>
+      _pushWithoutCamera(BatchScreen(scanIds: scanIds));
+
   Future<void> _openSitePreview() async {
     // _status guard blocks a double tap from pushing two AR screens (two
     // ARCore sessions) while the up-to-8s fetch below is in flight.
@@ -330,14 +347,8 @@ class _CameraScreenState extends State<CameraScreen> {
       // Fetch while the live preview is still up.
       final buildings = await BuildingCatalog.fetch();
       if (!mounted) return;
-      final c = _controller;
-      _controller = null;
-      await c?.dispose();
-      if (!mounted) return;
       setState(() => _status = null);
-      await Navigator.of(context).push(MaterialPageRoute(
-          builder: (_) => SitePreviewScreen(buildings: buildings)));
-      if (mounted) _init();
+      await _pushWithoutCamera(SitePreviewScreen(buildings: buildings));
     } catch (e) {
       _showError(e);
     } finally {
@@ -351,13 +362,7 @@ class _CameraScreenState extends State<CameraScreen> {
     setState(() => _status = 'Analyzing…');
     final result = await scanApi.waitForResult(scanId);
     if (!mounted) return;
-    final ctrl = _controller;
-    _controller = null;
-    await ctrl?.dispose();
-    if (!mounted) return;
-    await Navigator.of(context).push(MaterialPageRoute(
-        builder: (_) => ResultScreen(result: result, imageBytes: bytes)));
-    if (mounted) _init();
+    await _pushWithoutCamera(ResultScreen(result: result, imageBytes: bytes));
   }
 
   void _showError(Object e) => _showSnack('Scan failed: $e');
@@ -380,8 +385,8 @@ class _CameraScreenState extends State<CameraScreen> {
   Widget build(BuildContext context) {
     final ctrl        = _controller;
     final shots       = _shots;
-    final isMulti     = shots != null;
     final isRecording = _burstShots != null;
+    final busy        = _status != null;
 
     return Scaffold(
       backgroundColor: Colors.black,
@@ -389,31 +394,53 @@ class _CameraScreenState extends State<CameraScreen> {
       appBar: AppBar(
         backgroundColor: Colors.transparent,
         elevation: 0,
-        title: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Icon(Icons.radar, color: AppColors.accent, size: 18),
-            const SizedBox(width: 8),
-            Text('StructuralVision',
-                style: AppTextStyles.titleMd.copyWith(color: Colors.white)),
-          ],
-        ),
+        automaticallyImplyLeading: false,
+        centerTitle: false,
+        titleSpacing: 12,
+        // What's being scanned lives in the top bar; it stays tappable in
+        // Multi, where each photo is queued with the component picked then.
+        title: isRecording
+            ? _RecBadge(count: _burstShots!.length)
+            : _ComponentChip(
+                label: _component == null
+                    ? 'Choose component'
+                    : ComponentSelectSheet.labelFor(_component),
+                onTap: busy ? null : _pickComponent,
+              ),
         actions: [
-          _NavAction(
-            icon: Icons.history_rounded,
-            label: 'History',
-            onTap: () => Navigator.of(context).push(
-                MaterialPageRoute(builder: (_) => const HistoryScreen())),
+          IconButton(
+            icon: const Icon(Icons.history_rounded),
+            tooltip: 'History',
+            color: Colors.white70,
+            onPressed: busy
+                ? null
+                : () => _pushWithoutCamera(const HistoryScreen()),
           ),
-          _NavAction(
-            icon: Icons.apartment_rounded,
-            label: 'Site preview (3D)',
-            onTap: _openSitePreview,
-          ),
-          _NavAction(
-            icon: Icons.logout_rounded,
-            label: 'Sign out',
-            onTap: () => Supabase.instance.client.auth.signOut(),
+          PopupMenuButton<String>(
+            icon: const Icon(Icons.more_vert_rounded, color: Colors.white70),
+            tooltip: 'More',
+            color: AppColors.surface2,
+            onSelected: (v) => v == 'site'
+                ? _openSitePreview()
+                : Supabase.instance.client.auth.signOut(),
+            itemBuilder: (_) => const [
+              PopupMenuItem(
+                value: 'site',
+                child: ListTile(
+                  leading: Icon(Icons.apartment_rounded),
+                  title: Text('Site preview (3D)'),
+                  contentPadding: EdgeInsets.zero,
+                ),
+              ),
+              PopupMenuItem(
+                value: 'signout',
+                child: ListTile(
+                  leading: Icon(Icons.logout_rounded),
+                  title: Text('Sign out'),
+                  contentPadding: EdgeInsets.zero,
+                ),
+              ),
+            ],
           ),
           const SizedBox(width: 4),
         ],
@@ -427,84 +454,48 @@ class _CameraScreenState extends State<CameraScreen> {
                   fit: StackFit.expand,
                   children: [
                     // ── Live preview (pinch to zoom) ─────────────────────
+                    // CameraPreview keeps the stream's aspect ratio only under
+                    // loose constraints; filling the Stack stretched the 4:3
+                    // stream (1632x1224 on the vivo) to 20:9, ~1.67x too tall.
+                    // Top-aligned under the bar, like a stock camera in 4:3;
+                    // the photo is 4:3 too, so the frame is what gets shot.
                     GestureDetector(
+                      behavior: HitTestBehavior.opaque,
                       onScaleStart: (_) => _onZoomStart(),
                       onScaleUpdate: (d) => _onZoomUpdate(d.scale),
-                      child: CameraPreview(ctrl),
+                      child: Padding(
+                        padding: EdgeInsets.only(
+                            top: MediaQuery.of(context).padding.top +
+                                kToolbarHeight),
+                        child: Align(
+                          alignment: Alignment.topCenter,
+                          child: CameraPreview(ctrl),
+                        ),
+                      ),
                     ),
 
-                    // ── Viewfinder overlay ────────────────────────────────
-                    if (_status == null && !isRecording) const _ViewfinderGuide(),
+                    if (busy) _ProcessingOverlay(status: _status!),
 
-                    // ── Component chip (what's being scanned) ─────────────
-                    // Stays tappable in multi-capture: each photo is queued
-                    // with whatever component is selected at that moment.
-                    if (_status == null && !isRecording)
-                      Positioned(
-                        top: MediaQuery.of(context).padding.top + 64,
-                        left: 0,
-                        right: 0,
-                        child: Center(
-                          child: _ComponentChip(
-                            label: _component == null
-                                ? 'Choose component'
-                                : ComponentSelectSheet.labelFor(_component),
-                            onTap: _pickComponent,
-                          ),
-                        ),
-                      ),
-
-                    // ── REC badge (video burst) ───────────────────────────
-                    if (isRecording)
-                      Positioned(
-                        top: MediaQuery.of(context).padding.top + 64,
-                        left: 0,
-                        right: 0,
-                        child: Center(
-                            child: _RecBadge(count: _burstShots!.length)),
-                      ),
-
-                    // ── Zoom presets (pinch on the preview for in-between) ─
-                    if (_status == null && _zoomMax > _zoomMin)
-                      Positioned(
-                        right: 12,
-                        top: MediaQuery.of(context).padding.top + 120,
-                        bottom: 240, // clear of the multi-capture shot strip
-                        child: _ZoomPresets(
-                          zoom: _zoom,
-                          min: _zoomMin,
-                          max: _zoomMax,
-                          onSelect: _setZoom,
-                        ),
-                      ),
-
-                    // ── Queued shots (multi-capture) ──────────────────────
-                    if (isMulti && _status == null)
-                      Positioned(
-                        left: 0,
-                        right: 0,
-                        bottom: 150 + MediaQuery.of(context).padding.bottom,
-                        child: _ShotStrip(
-                            shots: shots, onRemove: _removeShot),
-                      ),
-
-                    // ── Processing overlay ────────────────────────────────
-                    if (_status != null)
-                      _ProcessingOverlay(status: _status!),
-
-                    // ── Bottom controls ───────────────────────────────────
+                    // ── Bottom: shots · zoom · mode · shutter ────────────
                     Positioned(
                       left: 0,
                       right: 0,
                       bottom: 0,
-                      child: _ControlBar(
-                        multiCount: isMulti ? shots.length : null,
+                      child: _BottomControls(
+                        mode: _mode,
+                        shots: shots,
                         isRecording: isRecording,
-                        isBusy: _status != null,
+                        busy: busy,
+                        zoom: _zoom,
+                        zoomMin: _zoomMin,
+                        zoomMax: _zoomMax,
+                        onZoom: _setZoom,
+                        onMode: _setMode,
+                        onRemoveShot: _removeShot,
                         onGallery: _pickFromGallery,
-                        onCapture: _scan,
-                        onMulti: _toggleMulti,
-                        onRecord: _toggleRecording,
+                        onShutter:
+                            _mode == _Mode.video ? _toggleRecording : _scan,
+                        onAnalyze: _finishMulti,
                       ),
                     ),
                   ],
@@ -514,72 +505,6 @@ class _CameraScreenState extends State<CameraScreen> {
 }
 
 // ── Sub-widgets ───────────────────────────────────────────────────────────────
-
-class _NavAction extends StatelessWidget {
-  final IconData icon;
-  final String   label;
-  final VoidCallback onTap;
-
-  const _NavAction({
-    required this.icon,
-    required this.label,
-    required this.onTap,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return IconButton(
-      icon: Icon(icon),
-      tooltip: label,
-      onPressed: onTap,
-      style: IconButton.styleFrom(
-        foregroundColor: Colors.white70,
-      ),
-    );
-  }
-}
-
-class _ViewfinderGuide extends StatelessWidget {
-  const _ViewfinderGuide();
-
-  @override
-  Widget build(BuildContext context) {
-    return Center(
-      child: CustomPaint(
-        size: const Size(200, 200),
-        painter: _CornerPainter(),
-      ),
-    );
-  }
-}
-
-class _CornerPainter extends CustomPainter {
-  @override
-  void paint(Canvas canvas, Size size) {
-    final paint = Paint()
-      ..color = AppColors.accent.withValues(alpha: 0.8)
-      ..strokeWidth = 2.5
-      ..style = PaintingStyle.stroke
-      ..strokeCap = StrokeCap.round;
-    const len = 20.0;
-    final r   = size;
-    // corners
-    for (final pts in [
-      [Offset(0, len), Offset.zero, Offset(len, 0)],
-      [Offset(r.width - len, 0), Offset(r.width, 0), Offset(r.width, len)],
-      [Offset(r.width, r.height - len), Offset(r.width, r.height), Offset(r.width - len, r.height)],
-      [Offset(len, r.height), Offset(0, r.height), Offset(0, r.height - len)],
-    ]) {
-      final path = Path()..moveTo(pts[0].dx, pts[0].dy)
-        ..lineTo(pts[1].dx, pts[1].dy)
-        ..lineTo(pts[2].dx, pts[2].dy);
-      canvas.drawPath(path, paint);
-    }
-  }
-
-  @override
-  bool shouldRepaint(_) => false;
-}
 
 class _RecBadge extends StatelessWidget {
   final int count;
@@ -654,14 +579,13 @@ class _ShotStrip extends StatelessWidget {
     if (shots.isEmpty) {
       return Center(
         child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
           decoration: BoxDecoration(
-            color: Colors.black.withValues(alpha: 0.65),
+            color: Colors.black.withValues(alpha: 0.5),
             borderRadius: BorderRadius.circular(20),
-            border: Border.all(color: AppColors.accent.withValues(alpha: 0.6)),
           ),
           child: Text(
-            'Multi-capture on — change the component between shots',
+            'Each shot can have its own component',
             style: AppTextStyles.bodySm.copyWith(color: Colors.white),
           ),
         ),
@@ -755,27 +679,35 @@ class _ZoomPresets extends StatelessWidget {
       final r = (v * 10).round() / 10;
       return '${r.toStringAsFixed(r == r.roundToDouble() ? 0 : 1)}x';
     }
-    return Column(
-      mainAxisAlignment: MainAxisAlignment.center,
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 4),
+      decoration: BoxDecoration(
+        color: Colors.black.withValues(alpha: 0.35),
+        borderRadius: BorderRadius.circular(24),
+      ),
+      child: Row(
+      mainAxisSize: MainAxisSize.min,
       children: [
-        // Highest zoom on top, like the physical direction of "in".
-        for (final p in presets.reversed)
-          Padding(
-            padding: const EdgeInsets.symmetric(vertical: 4),
-            child: Semantics(
+        for (final p in presets)
+          Semantics(
               button: true,
               label: 'Zoom ${fmt(p)}',
               child: GestureDetector(
                 onTap: () => onSelect(p),
+                behavior: HitTestBehavior.opaque,
                 child: Container(
+                  // 48dp tap target around a 36dp lit circle.
                   width: 48,
-                  height: 48,
+                  height: 44,
+                  alignment: Alignment.center,
+                  child: Container(
+                  width: 36,
+                  height: 36,
                   alignment: Alignment.center,
                   decoration: BoxDecoration(
                     shape: BoxShape.circle,
-                    color: Colors.black.withValues(alpha: 0.55),
-                    border: p == active
-                        ? Border.all(color: AppColors.accent, width: 1.5)
+                    color: p == active
+                        ? Colors.black.withValues(alpha: 0.5)
                         : null,
                   ),
                   child: Text(
@@ -783,13 +715,15 @@ class _ZoomPresets extends StatelessWidget {
                     style: AppTextStyles.bodySm.copyWith(
                       color: p == active ? AppColors.accent : Colors.white,
                       fontWeight: FontWeight.w600,
+                      fontSize: 12,
                     ),
+                  ),
                   ),
                 ),
               ),
-            ),
           ),
       ],
+      ),
     );
   }
 }
@@ -821,78 +755,98 @@ class _ProcessingOverlay extends StatelessWidget {
   }
 }
 
-class _ControlBar extends StatelessWidget {
-  /// null = single-shot mode; otherwise how many photos are queued.
-  final int? multiCount;
-  final bool isRecording;
-  final bool isBusy;
-  final VoidCallback onGallery;
-  final VoidCallback onCapture;
-  final VoidCallback onMulti;
-  final VoidCallback onRecord;
+/// Everything under the preview, stacked like a stock camera: queued shots
+/// (Multi), zoom row, mode switch, then gallery · shutter · analyze.
+class _BottomControls extends StatelessWidget {
+  final _Mode mode;
+  final List<_Shot>? shots;
+  final bool isRecording, busy;
+  final double zoom, zoomMin, zoomMax;
+  final ValueChanged<double> onZoom;
+  final ValueChanged<_Mode> onMode;
+  final void Function(int) onRemoveShot;
+  final VoidCallback onGallery, onShutter, onAnalyze;
 
-  const _ControlBar({
-    required this.multiCount,
+  const _BottomControls({
+    required this.mode,
+    required this.shots,
     required this.isRecording,
-    required this.isBusy,
+    required this.busy,
+    required this.zoom,
+    required this.zoomMin,
+    required this.zoomMax,
+    required this.onZoom,
+    required this.onMode,
+    required this.onRemoveShot,
     required this.onGallery,
-    required this.onCapture,
-    required this.onMulti,
-    required this.onRecord,
+    required this.onShutter,
+    required this.onAnalyze,
   });
 
   @override
   Widget build(BuildContext context) {
-    final bottom = MediaQuery.of(context).padding.bottom;
-    // One mode at a time: while a burst is running, multi is locked out, and
-    // vice versa, so the two never fight over the shutter.
-    final busyOrMulti  = isBusy || multiCount != null;
-    final busyOrRec    = isBusy || isRecording;
+    final queued = shots?.length ?? 0;
     return Container(
-      padding: EdgeInsets.fromLTRB(12, 20, 12, 20 + bottom),
+      padding: EdgeInsets.fromLTRB(
+          0, 32, 0, 16 + MediaQuery.of(context).padding.bottom),
       decoration: BoxDecoration(
         gradient: LinearGradient(
           begin: Alignment.bottomCenter,
           end: Alignment.topCenter,
-          colors: [
-            Colors.black.withValues(alpha: 0.85),
-            Colors.transparent,
-          ],
+          colors: [Colors.black.withValues(alpha: 0.85), Colors.transparent],
         ),
       ),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
         children: [
-          // Gallery
-          _SideButton(
-            icon: Icons.photo_library_outlined,
-            label: 'Gallery',
-            onTap: (busyOrRec || multiCount != null) ? null : onGallery,
+          if (shots != null && !busy) ...[
+            _ShotStrip(shots: shots!, onRemove: onRemoveShot),
+            const SizedBox(height: 16),
+          ],
+          if (!busy && zoomMax > zoomMin) ...[
+            _ZoomPresets(
+                zoom: zoom, min: zoomMin, max: zoomMax, onSelect: onZoom),
+            const SizedBox(height: 8),
+          ],
+          // Hidden mid-burst so a stray tap can't switch modes under it.
+          Opacity(
+            opacity: isRecording ? 0 : 1,
+            child: IgnorePointer(
+              ignoring: isRecording || busy,
+              child: _ModeSwitch(mode: mode, onSelect: onMode),
+            ),
           ),
-
-          // Multi-capture: queue photos, re-picking the component between shots
-          _SideButton(
-            icon: multiCount == null
-                ? Icons.burst_mode_outlined
-                : Icons.check_rounded,
-            label: multiCount == null
-                ? 'Multi'
-                : multiCount == 0
-                    ? 'Cancel'
-                    : 'Analyze $multiCount',
-            activeColor: multiCount != null ? AppColors.accent : null,
-            onTap: busyOrRec ? null : onMulti,
-          ),
-
-          // Shutter
-          _ShutterButton(onTap: busyOrRec ? null : onCapture),
-
-          // Video burst: timed sweep, one component for all frames
-          _SideButton(
-            icon: isRecording ? Icons.stop_rounded : Icons.videocam_outlined,
-            label: isRecording ? 'Stop' : 'Video',
-            activeColor: isRecording ? AppColors.danger : null,
-            onTap: busyOrMulti ? null : onRecord,
+          const SizedBox(height: 8),
+          Row(
+            children: [
+              Expanded(
+                child: Center(
+                  child: _RoundButton(
+                    icon: Icons.photo_library_outlined,
+                    label: 'Pick from gallery',
+                    onTap: mode == _Mode.photo && !busy ? onGallery : null,
+                  ),
+                ),
+              ),
+              _ShutterButton(
+                mode: mode,
+                isRecording: isRecording,
+                onTap: busy ? null : onShutter,
+              ),
+              Expanded(
+                child: Center(
+                  child: queued > 0 && !busy
+                      ? _RoundButton(
+                          icon: Icons.check_rounded,
+                          label: 'Analyze $queued photos',
+                          badge: '$queued',
+                          filled: true,
+                          onTap: onAnalyze,
+                        )
+                      : const SizedBox.shrink(),
+                ),
+              ),
+            ],
           ),
         ],
       ),
@@ -900,9 +854,119 @@ class _ControlBar extends StatelessWidget {
   }
 }
 
+class _ModeSwitch extends StatelessWidget {
+  final _Mode mode;
+  final ValueChanged<_Mode> onSelect;
+  const _ModeSwitch({required this.mode, required this.onSelect});
+
+  static const _labels = {
+    _Mode.photo: 'Photo',
+    _Mode.multi: 'Multi',
+    _Mode.video: 'Video',
+  };
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.center,
+      children: [
+        for (final m in _Mode.values)
+          Semantics(
+            button: true,
+            selected: m == mode,
+            label: '${_labels[m]} mode',
+            excludeSemantics: true,
+            child: InkWell(
+              onTap: () => onSelect(m),
+              borderRadius: BorderRadius.circular(20),
+              child: Padding(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                child: Text(
+                  _labels[m]!,
+                  style: AppTextStyles.titleSm.copyWith(
+                    color: m == mode ? AppColors.accent : Colors.white70,
+                  ),
+                ),
+              ),
+            ),
+          ),
+      ],
+    );
+  }
+}
+
+class _RoundButton extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final String? badge;
+  final bool filled;
+  final VoidCallback? onTap;
+
+  const _RoundButton({
+    required this.icon,
+    required this.label,
+    required this.onTap,
+    this.badge,
+    this.filled = false,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final enabled = onTap != null;
+    return Semantics(
+      button: true,
+      enabled: enabled,
+      label: label,
+      excludeSemantics: true,
+      child: Material(
+        color: filled
+            ? AppColors.accent
+            : Colors.white.withValues(alpha: enabled ? 0.14 : 0.06),
+        shape: const CircleBorder(),
+        child: InkWell(
+          customBorder: const CircleBorder(),
+          onTap: enabled
+              ? () {
+                  HapticFeedback.selectionClick();
+                  onTap!();
+                }
+              : null,
+          child: SizedBox(
+            width: 52,
+            height: 52,
+            child: Stack(
+              alignment: Alignment.center,
+              children: [
+                Icon(icon,
+                    size: 24,
+                    color: filled
+                        ? AppColors.bg
+                        : enabled
+                            ? Colors.white
+                            : Colors.white30),
+                if (badge != null)
+                  Positioned(
+                    right: 6,
+                    top: 6,
+                    child: Text(badge!,
+                        style: AppTextStyles.label.copyWith(
+                            color: AppColors.bg,
+                            fontWeight: FontWeight.w700,
+                            letterSpacing: 0)),
+                  ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 class _ComponentChip extends StatelessWidget {
   final String label;
-  final VoidCallback onTap;
+  final VoidCallback? onTap;
   const _ComponentChip({required this.label, required this.onTap});
 
   @override
@@ -925,9 +989,13 @@ class _ComponentChip extends StatelessWidget {
               child: Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  Text(label,
-                      style: AppTextStyles.titleSm
-                          .copyWith(color: Colors.white)),
+                  Flexible(
+                    child: Text(label,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: AppTextStyles.titleSm
+                            .copyWith(color: Colors.white)),
+                  ),
                   const SizedBox(width: 4),
                   const Icon(Icons.arrow_drop_down_rounded,
                       color: AppColors.accent),
@@ -942,111 +1010,49 @@ class _ComponentChip extends StatelessWidget {
 }
 
 class _ShutterButton extends StatelessWidget {
+  final _Mode mode;
+  final bool isRecording;
   final VoidCallback? onTap;
-  const _ShutterButton({required this.onTap});
+  const _ShutterButton(
+      {required this.mode, required this.isRecording, required this.onTap});
 
   @override
   Widget build(BuildContext context) {
-    return Semantics(
-      button: true,
-      enabled: onTap != null,
-      label: 'Capture photo',
-      child: Material(
-        type: MaterialType.transparency,
-        shape: const CircleBorder(),
-        clipBehavior: Clip.antiAlias,
-        child: InkWell(
-          onTap: onTap,
-          splashColor: Colors.white24,
-          child: Container(
-        width: 72,
-        height: 72,
-        decoration: BoxDecoration(
-          shape: BoxShape.circle,
-          border: Border.all(
-              color: onTap != null ? AppColors.accent : AppColors.textMuted,
-              width: 3),
-        ),
-        child: Center(
-          child: Container(
-            width: 56,
-            height: 56,
-            decoration: BoxDecoration(
-              shape: BoxShape.circle,
-              color: onTap != null ? AppColors.accent : AppColors.textMuted,
-            ),
-          ),
-        ),
-      ),
-        ),
-      ),
-    );
-  }
-}
-
-class _SideButton extends StatelessWidget {
-  final IconData icon;
-  final String   label;
-  /// Non-null when this button's mode is active — accent for multi-capture,
-  /// danger for a running video burst.
-  final Color?   activeColor;
-  final VoidCallback? onTap;
-
-  const _SideButton({
-    required this.icon,
-    required this.label,
-    this.activeColor,
-    required this.onTap,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final color = onTap == null
+    final enabled = onTap != null;
+    final fill = !enabled
         ? AppColors.textMuted
-        : activeColor ?? Colors.white;
+        : mode == _Mode.video
+            ? AppColors.danger
+            : AppColors.accent;
     return Semantics(
       button: true,
-      enabled: onTap != null,
-      label: label,
+      enabled: enabled,
+      label: mode == _Mode.video
+          ? (isRecording ? 'Stop recording' : 'Start video burst')
+          : mode == _Mode.multi
+              ? 'Add photo'
+              : 'Capture photo',
       excludeSemantics: true,
-      child: InkWell(
-        onTap: onTap == null
-            ? null
-            : () {
-                HapticFeedback.selectionClick();
-                onTap!();
-              },
-        borderRadius: BorderRadius.circular(12),
-        child: Padding(
-          padding: const EdgeInsets.all(4),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Container(
-                width: 52,
-                height: 52,
-                decoration: BoxDecoration(
-                  shape: BoxShape.circle,
-                  color: Colors.white.withValues(alpha: 0.12),
-                  border: Border.all(
-                      color: activeColor?.withValues(alpha: 0.6) ??
-                          Colors.white.withValues(alpha: 0.2)),
-                ),
-                child: Icon(icon, color: color, size: 24),
-              ),
-              const SizedBox(height: 6),
-              // Fixed width: four buttons now share the bar, and the widest
-              // label ("Analyze 12") must not push the row past the screen.
-              SizedBox(
-                width: 72,
-                child: Text(label,
-                    textAlign: TextAlign.center,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: AppTextStyles.bodySm
-                        .copyWith(color: color, fontSize: 11)),
-              ),
-            ],
+      child: GestureDetector(
+        onTap: onTap,
+        child: Container(
+          width: 76,
+          height: 76,
+          alignment: Alignment.center,
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            border: Border.all(color: Colors.white, width: 3),
+          ),
+          // Recording morphs the dot into a stop square, like a stock camera.
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 180),
+            curve: Curves.easeOut,
+            width: isRecording ? 28 : 60,
+            height: isRecording ? 28 : 60,
+            decoration: BoxDecoration(
+              color: fill,
+              borderRadius: BorderRadius.circular(isRecording ? 6 : 30),
+            ),
           ),
         ),
       ),

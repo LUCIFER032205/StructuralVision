@@ -3,6 +3,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../config.dart';
 import '../theme.dart';
+import 'signup_screen.dart';
 
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});
@@ -20,28 +21,16 @@ class _LoginScreenState extends State<LoginScreen> {
   String? _notice;   // non-error feedback, e.g. "confirm your email"
 
   Future<void> _run(Future<void> Function() action) async {
-    // Supabase reads a sign-up with no credentials as an ANONYMOUS sign-in and
-    // answers "Anonymous sign-ins are disabled" — which tells the user nothing
-    // about the empty fields in front of them. Catch it here instead.
-    final email = _email.text.trim();
-    final password = _password.text;
-    if (email.isEmpty || password.isEmpty) {
-      setState(() => _error = 'Enter an email and a password');
-      return;
-    }
-    if (!email.contains('@')) {
-      setState(() => _error = 'That email address looks incomplete');
-      return;
-    }
-    if (password.length < 6) {
-      setState(() => _error = 'Password must be at least 6 characters');
+    final invalid = credentialError(_email.text.trim(), _password.text);
+    if (invalid != null) {
+      setState(() => _error = invalid);
       return;
     }
     setState(() { _busy = true; _error = null; _notice = null; });
     try {
       await action();
     } on AuthException catch (e) {
-      setState(() => _error = e.message);
+      setState(() => _error = authErrorText(e));
     } catch (e) {
       setState(() => _error = '$e');
     } finally {
@@ -49,17 +38,19 @@ class _LoginScreenState extends State<LoginScreen> {
     }
   }
 
-  /// Sign-up only signs you in when the project has email confirmation off.
-  /// With it on, Supabase returns no session and the screen would just sit
-  /// there, so say what happened.
-  Future<void> _signUp(GoTrueClient auth) => _run(() async {
-        final res = await auth.signUp(
-            email: _email.text.trim(), password: _password.text);
-        if (res.session == null && mounted) {
-          setState(() => _notice =
-              'Account created. Check ${_email.text.trim()} for the confirmation link, then sign in.');
-        }
+  /// SignupScreen pops with the new email only when Supabase wants the
+  /// address confirmed first; a signed-in sign-up swaps home on its own.
+  Future<void> _openSignUp() async {
+    final email = await Navigator.of(context).push<String>(
+        MaterialPageRoute(builder: (_) => const SignupScreen()));
+    if (email != null && mounted) {
+      _email.text = email;
+      setState(() {
+        _error = null;
+        _notice = 'Account created. Check $email for the confirmation link, then sign in.';
       });
+    }
+  }
 
   Future<void> _editServer() async {
     final ctrl = TextEditingController(
@@ -180,56 +171,12 @@ class _LoginScreenState extends State<LoginScreen> {
                       ),
                     ),
                     const SizedBox(height: 8),
-                    if (_error != null) ...[
-                      const SizedBox(height: 4),
-                      Container(
-                        padding: const EdgeInsets.symmetric(
-                            horizontal: 12, vertical: 10),
-                        decoration: BoxDecoration(
-                          color: AppColors.danger.withValues(alpha: 0.1),
-                          borderRadius: BorderRadius.circular(8),
-                          border: Border.all(
-                              color: AppColors.danger.withValues(alpha: 0.4)),
-                        ),
-                        child: Row(
-                          children: [
-                            const Icon(Icons.error_outline,
-                                color: AppColors.danger, size: 16),
-                            const SizedBox(width: 8),
-                            Expanded(
-                              child: Text(_error!,
-                                  style: AppTextStyles.bodySm
-                                      .copyWith(color: AppColors.danger)),
-                            ),
-                          ],
-                        ),
-                      ),
-                    ],
-                    if (_notice != null) ...[
-                      const SizedBox(height: 4),
-                      Container(
-                        padding: const EdgeInsets.symmetric(
-                            horizontal: 12, vertical: 10),
-                        decoration: BoxDecoration(
-                          color: AppColors.accent.withValues(alpha: 0.1),
-                          borderRadius: BorderRadius.circular(8),
-                          border: Border.all(
-                              color: AppColors.accent.withValues(alpha: 0.4)),
-                        ),
-                        child: Row(
-                          children: [
-                            const Icon(Icons.mark_email_unread_outlined,
-                                color: AppColors.accent, size: 16),
-                            const SizedBox(width: 8),
-                            Expanded(
-                              child: Text(_notice!,
-                                  style: AppTextStyles.bodySm
-                                      .copyWith(color: AppColors.accent)),
-                            ),
-                          ],
-                        ),
-                      ),
-                    ],
+                    if (_error != null)
+                      AuthMessage(_error!, color: AppColors.danger,
+                          icon: Icons.error_outline),
+                    if (_notice != null)
+                      AuthMessage(_notice!, color: AppColors.accent,
+                          icon: Icons.mark_email_unread_outlined),
                     const SizedBox(height: 20),
                     FilledButton(
                       onPressed: _busy
@@ -247,11 +194,9 @@ class _LoginScreenState extends State<LoginScreen> {
                           : const Text('Sign in'),
                     ),
                     const SizedBox(height: 12),
-                    OutlinedButton(
-                      onPressed: _busy
-                          ? null
-                          : () => _signUp(auth),
-                      child: const Text('Create account'),
+                    TextButton(
+                      onPressed: _busy ? null : _openSignUp,
+                      child: const Text('New here? Create an account'),
                     ),
                   ],
                 ),
@@ -274,4 +219,64 @@ class _LoginScreenState extends State<LoginScreen> {
       ),
     );
   }
+}
+
+/// Supabase reads a sign-up with no credentials as an ANONYMOUS sign-in and
+/// answers "Anonymous sign-ins are disabled", which tells the user nothing about
+/// the empty fields in front of them. Shared by sign-in and sign-up.
+String? credentialError(String email, String password) {
+  if (email.isEmpty || password.isEmpty) return 'Enter an email and a password';
+  if (!email.contains('@')) return 'That email address looks incomplete';
+  if (password.length < 6) return 'Password must be at least 6 characters';
+  return null;
+}
+
+/// Supabase errors in plain words. A 5xx arrives as the raw JSON body and a
+/// network failure as a socket dump, neither of which a user can act on.
+String authErrorText(AuthException e,
+    {String serverError =
+        'The sign-in service had a problem. Try again in a few minutes.'}) {
+  if (e is AuthRetryableFetchException) {
+    return e.statusCode == null
+        ? "Can't reach the server. Check your internet connection."
+        : serverError;
+  }
+  return switch (e.code) {
+    'invalid_credentials' => 'Wrong email or password',
+    'email_not_confirmed' =>
+      'Confirm your email first. Check your inbox and spam folder.',
+    'user_already_exists' || 'email_exists' =>
+      'An account with this email already exists. Sign in instead.',
+    'over_email_send_rate_limit' =>
+      'Too many emails sent. Wait a few minutes and try again.',
+    'over_request_rate_limit' => 'Too many attempts. Wait a minute and try again.',
+    _ => e.message,
+  };
+}
+
+class AuthMessage extends StatelessWidget {
+  const AuthMessage(this.text, {super.key, required this.color, required this.icon});
+
+  final String text;
+  final Color color;
+  final IconData icon;
+
+  @override
+  Widget build(BuildContext context) => Container(
+        margin: const EdgeInsets.only(top: 4),
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+        decoration: BoxDecoration(
+          color: color.withValues(alpha: 0.1),
+          borderRadius: BorderRadius.circular(8),
+        ),
+        child: Row(
+          children: [
+            Icon(icon, color: color, size: 16),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(text, style: AppTextStyles.bodySm.copyWith(color: color)),
+            ),
+          ],
+        ),
+      );
 }

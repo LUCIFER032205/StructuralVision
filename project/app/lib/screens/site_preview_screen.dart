@@ -13,6 +13,7 @@ import 'package:flutter/material.dart';
 import 'package:vector_math/vector_math_64.dart' as vm;
 
 import '../building_catalog.dart';
+import '../theme.dart';
 import 'building_select_sheet.dart';
 
 /// AR site preview: place a picked 3D building on any flat surface, in a
@@ -36,8 +37,16 @@ class _SitePreviewScreenState extends State<SitePreviewScreen> {
 
   late BuildingType _building = widget.buildings.first;
   PreviewMode _mode = PreviewMode.room; // room first: works anywhere, desk is the demo case
-  double _roomSizeM = BuildingCatalog.roomDefaultM;
-  static const _roomSteps = [0.2, 0.4, 0.8, 1.5]; // tabletop .. coffee-table size
+  late double _roomSizeM = _fitRoom(BuildingCatalog.roomDefaultM);
+  // Where drag / twist left the model, relative to its anchor. A resize or a
+  // building switch reloads the node, which would otherwise snap it back.
+  vm.Matrix4? _placement;
+
+  List<double> get _roomSteps => BuildingCatalog.roomSteps
+      .where((m) => m >= _building.roomMinM)
+      .toList();
+
+  double _fitRoom(double m) => m < _building.roomMinM ? _building.roomMinM : m;
 
   String get _roomLabel => _roomSizeM < 1
       ? '${(_roomSizeM * 100).round()} cm'
@@ -52,6 +61,9 @@ class _SitePreviewScreenState extends State<SitePreviewScreen> {
         showPlanes: true, showFeaturePoints: true, handleTaps: true,
         handlePans: true, handleRotation: true, showWorldOrigin: false);
     objects.onInitialize();
+    // Drag and twist run natively (patched plugin); remember where they end.
+    objects.onPanEnd = (_, transform) => _placement = transform;
+    objects.onRotationEnd = (_, transform) => _placement = transform;
     session.onPlaneOrPointTap = _onTap;
     session.onPlaneDetected = (count) {
       if (!_planeFound && count > 0 && mounted) {
@@ -83,15 +95,17 @@ class _SitePreviewScreenState extends State<SitePreviewScreen> {
   }
 
   Future<bool> _addNode() async {
+    final local =
+        _building.isCustom ? _building.uri : await BuildingCatalog.cached(_building);
     final node = ARNode(
-      type: _building.isCustom
-          ? NodeType.fileSystemAppFolderGLB
-          : NodeType.webGLB,
-      uri: _building.uri,
+      type: local != null ? NodeType.fileSystemAppFolderGLB : NodeType.webGLB,
+      uri: local ?? _building.uri,
       scale: vm.Vector3.all(_building.scaleFor(_mode, roomSizeM: _roomSizeM)),
     );
     if (await _objects?.addNode(node, planeAnchor: _anchor) == true) {
       _node = node;
+      final placed = _placement;
+      if (placed != null) node.transform = placed; // keeps scale (plugin patch)
       return true;
     }
     _toast(_building.isCustom
@@ -122,7 +136,12 @@ class _SitePreviewScreenState extends State<SitePreviewScreen> {
   Future<void> _pickBuilding() async {
     final picked = await BuildingSelectSheet.show(context,
         buildings: widget.buildings, selectedId: _building.id);
-    if (picked != null) await _reload(() => _building = picked);
+    if (picked != null) {
+      await _reload(() {
+        _building = picked;
+        _roomSizeM = _fitRoom(_roomSizeM);
+      });
+    }
   }
 
   Future<void> _reset() async {
@@ -132,6 +151,7 @@ class _SitePreviewScreenState extends State<SitePreviewScreen> {
     setState(() {
       _node = null;
       _anchor = null;
+      _placement = null;
     });
   }
 
@@ -168,13 +188,8 @@ class _SitePreviewScreenState extends State<SitePreviewScreen> {
     final roomStepIndex = _roomSteps.indexOf(_roomSizeM);
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Site preview (3D)'),
+        title: const Text('Site preview'),
         actions: [
-          ActionChip(
-            label: Text(_building.name),
-            onPressed: _busy ? null : _pickBuilding,
-          ),
-          const SizedBox(width: 8),
           if (anchored)
             IconButton(
                 tooltip: 'Place again', icon: const Icon(Icons.refresh), onPressed: _reset),
@@ -192,74 +207,102 @@ class _SitePreviewScreenState extends State<SitePreviewScreen> {
             top: 12,
             left: 12,
             right: 12,
-            child: Card(
-              color: Colors.black54,
-              child: Padding(
-                padding: const EdgeInsets.all(12),
-                child: Row(children: [
-                  if (!_planeFound || _busy) ...[
-                    const SizedBox(
-                        width: 14,
-                        height: 14,
-                        child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white70)),
-                    const SizedBox(width: 8),
-                  ],
-                  Expanded(child: Text(hint, style: const TextStyle(color: Colors.white))),
-                ]),
-              ),
+            child: Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                  color: Colors.black54, borderRadius: BorderRadius.circular(12)),
+              child: Row(children: [
+                if (!_planeFound || _busy) ...[
+                  const SizedBox(
+                      width: 18,
+                      height: 18,
+                      child: CircularProgressIndicator(strokeWidth: 2.5, color: Colors.white)),
+                  const SizedBox(width: 12),
+                ],
+                Expanded(child: Text(hint, style: const TextStyle(color: Colors.white))),
+              ]),
             ),
           ),
+          // One flat panel docked to the bottom edge (no card-in-card), clear
+          // of the system nav bar.
           Positioned(
-            left: 12,
-            right: 12,
-            bottom: 12,
-            child: Card(
-              color: Colors.black54,
-              child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    SegmentedButton<PreviewMode>(
-                      segments: const [
-                        ButtonSegment(
-                            value: PreviewMode.room,
-                            label: Text('Room (miniature)'),
-                            icon: Icon(Icons.zoom_out_map)),
-                        ButtonSegment(
-                            value: PreviewMode.site,
-                            label: Text('Site (true size)'),
-                            icon: Icon(Icons.zoom_in_map)),
-                      ],
-                      selected: {_mode},
-                      onSelectionChanged: _busy
-                          ? null
-                          : (s) => _reload(() => _mode = s.first),
-                    ),
-                    if (_mode == PreviewMode.room) ...[
-                      const SizedBox(height: 8),
-                      Row(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                          IconButton(
-                            icon: const Icon(Icons.remove_circle_outline, color: Colors.white),
-                            onPressed: _busy || roomStepIndex <= 0
-                                ? null
-                                : () => _reload(
-                                    () => _roomSizeM = _roomSteps[roomStepIndex - 1]),
-                          ),
-                          Text(_roomLabel, style: const TextStyle(color: Colors.white)),
-                          IconButton(
-                            icon: const Icon(Icons.add_circle_outline, color: Colors.white),
-                            onPressed: _busy || roomStepIndex >= _roomSteps.length - 1
-                                ? null
-                                : () => _reload(
-                                    () => _roomSizeM = _roomSteps[roomStepIndex + 1]),
-                          ),
-                        ],
+            left: 0,
+            right: 0,
+            bottom: 0,
+            child: Container(
+              decoration: const BoxDecoration(
+                color: AppColors.surface,
+                borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+              ),
+              child: SafeArea(
+                top: false,
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 4, 16, 12),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      ListTile(
+                        contentPadding: EdgeInsets.zero,
+                        leading: const Icon(Icons.apartment_rounded,
+                            color: AppColors.accent),
+                        title: Text(_building.name,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: AppTextStyles.titleMd),
+                        trailing: const Text('Change',
+                            style: TextStyle(color: AppColors.accent)),
+                        onTap: _busy ? null : _pickBuilding,
                       ),
+                      SizedBox(
+                        width: double.infinity,
+                        child: SegmentedButton<PreviewMode>(
+                          showSelectedIcon: false,
+                          segments: const [
+                            ButtonSegment(
+                                value: PreviewMode.room,
+                                label: Text('Miniature'),
+                                icon: Icon(Icons.zoom_out_map)),
+                            ButtonSegment(
+                                value: PreviewMode.site,
+                                label: Text('True size'),
+                                icon: Icon(Icons.zoom_in_map)),
+                          ],
+                          selected: {_mode},
+                          onSelectionChanged: _busy
+                              ? null
+                              : (s) => _reload(() => _mode = s.first),
+                        ),
+                      ),
+                      if (_mode == PreviewMode.room)
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            IconButton(
+                              tooltip: 'Smaller',
+                              icon: const Icon(Icons.remove_circle_outline),
+                              onPressed: _busy || roomStepIndex <= 0
+                                  ? null
+                                  : () => _reload(
+                                      () => _roomSizeM = _roomSteps[roomStepIndex - 1]),
+                            ),
+                            SizedBox(
+                              width: 64,
+                              child: Text(_roomLabel,
+                                  textAlign: TextAlign.center,
+                                  style: AppTextStyles.titleSm),
+                            ),
+                            IconButton(
+                              tooltip: 'Bigger',
+                              icon: const Icon(Icons.add_circle_outline),
+                              onPressed: _busy || roomStepIndex >= _roomSteps.length - 1
+                                  ? null
+                                  : () => _reload(
+                                      () => _roomSizeM = _roomSteps[roomStepIndex + 1]),
+                            ),
+                          ],
+                        ),
                     ],
-                  ],
+                  ),
                 ),
               ),
             ),

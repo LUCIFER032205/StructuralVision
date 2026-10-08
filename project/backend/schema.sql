@@ -38,7 +38,10 @@ create table if not exists crack_detections (
     length_px     double precision,
     width_px      double precision,
     growth_status text,             -- new | grown | stable (re-scan only)
-    area_delta    double precision
+    area_delta    double precision,
+    -- Per-crack measurement (2026-10-07): null = to do.
+    status        text check (status in ('measured','skipped','not_crack')),
+    measurement   jsonb             -- length_cm, width_mm(+upper), grade, risk_level
 );
 
 create index if not exists idx_crack_detections_scan on crack_detections(scan_id);
@@ -67,3 +70,9 @@ create policy "own detections" on crack_detections
 --     add column if not exists damage_class text,
 --     add column if not exists damage_rating text,
 --     add column if not exists residual_capacity_pct real;
+
+-- Migration 2026-10-07 (per-crack measurement):
+-- alter table crack_detections
+--     add column if not exists status text
+--         check (status in ('measured','skipped','not_crack')),
+--     add column if not exists measurement jsonb;

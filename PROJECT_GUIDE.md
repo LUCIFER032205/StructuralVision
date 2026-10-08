@@ -47,7 +47,6 @@ The one-line pitch is in [README.md:3](README.md). The current end-to-end flow (
 StructuralVision/
 ├── README.md                      # Short pitch + generic setup (partly stale, see §16)
 ├── RUN_GUIDE.md                   # The real day-to-day run instructions (VS Code tasks, ngrok, APK build)
-├── StructuralVisionAR_*.docx/pdf  # Draft paper and team scripts
 └── project/
     ├── app/                       # ── Flutter Android app ──
     │   ├── pubspec.yaml           # Dart dependencies
@@ -76,7 +75,7 @@ StructuralVision/
     ├── models/                    # Model weights (crack_seg.pt). NOT in git.
     ├── demo_kit/                  # 6 curated crack photos with known expected risk levels
     ├── docs/                      # Plans, runbooks, checklists
-    └── finetune_medium.py/.ipynb  # Kaggle: fine-tune the crack segmenter (v4, the model in use)
+    └── finetune_medium.ipynb      # Kaggle: fine-tune the crack segmenter (v4, the model in use)
 ```
 
 Not in git but present on the author's machine (all gitignored, [.gitignore](.gitignore)): `datasets/` (the merged training set only), `tools/` (ngrok, JDK 17), `.vscode/` (the run tasks RUN_GUIDE refers to), `project/models/`, `.env`, `project/app/dart_defines.env`.
@@ -729,4 +728,4 @@ Do these in order. Each step should take under an hour.
    - *Exercise:* add a fifth building to `static/buildings/manifest.json` that reuses an existing GLB with a different `size_m`, and confirm it shows up in the sheet. No app rebuild is needed.
 10. **Read the model history.**
     - Read the model evolution report (moved out of the repo to the paper_publication folder), focusing on why v3 was rejected, why v4 won on image-level accuracy, and why hairline widths can't come from masks.
-    - Then skim [finetune_medium.py](project/finetune_medium.py) to see how the model in use was trained.
+    - Then skim [finetune_medium.ipynb](project/finetune_medium.ipynb) to see how the model in use was trained.

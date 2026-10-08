@@ -8,6 +8,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../building_catalog.dart';
+import '../photo_orientation.dart';
 import '../scan_api.dart';
 import '../theme.dart';
 import 'batch_screen.dart';
@@ -163,14 +164,13 @@ class _CameraScreenState extends State<CameraScreen> {
           _showSnack('Max $_multiMaxShots photos — tap ✓ to analyze');
           return;
         }
-        final bytes = await (await ctrl.takePicture()).readAsBytes();
+        final bytes = await takeUprightPicture(ctrl);
         if (!mounted) return;
         setState(() => shots.add(_Shot(bytes, component)));
         return;
       }
       setState(() => _status = 'Capturing…');
-      final shot = await ctrl.takePicture();
-      await _analyze(await shot.readAsBytes(), componentType: component);
+      await _analyze(await takeUprightPicture(ctrl), componentType: component);
     } catch (e) {
       _showError(e);
     } finally {
@@ -239,8 +239,7 @@ class _CameraScreenState extends State<CameraScreen> {
       return;
     }
     try {
-      final shot = await ctrl.takePicture();
-      shots.add(await shot.readAsBytes());
+      shots.add(await takeUprightPicture(ctrl));
       if (mounted) setState(() {});
       if (shots.length >= _burstMaxShots) await _stopBurst();
     } catch (_) {}

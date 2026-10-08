@@ -1,5 +1,5 @@
 """
-report.py — one-page PDF scan report (ReportLab), per dev_plan spec:
+report.py — one-page PDF scan report (ReportLab):
 image with crack overlay, big color-coded risk, component, summary sentence.
 """
 import io

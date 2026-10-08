@@ -12,7 +12,7 @@ Every command is also available as a VS Code **Task**, so you rarely need to typ
 | Python 3.14 + packages | `C:\Python314\python.exe` | installed (`pip install -r project/backend/requirements.txt`) |
 | Backend secrets | `project/backend/.env` | filled in (gitignored) |
 | App build keys | `project/app/dart_defines.env` | filled in (gitignored) |
-| ML weights | `project/models/crack_seg.pt`, `component.onnx` | present |
+| ML weights | `project/models/crack_seg.pt` | present |
 | Flutter SDK | `F:\flutter` | 3.32.5 |
 | Android SDK / adb | `F:\android-sdk` | present |
 | JDK for APK builds | `F:\StructuralVision\tools\jdk-17` | present (the `java` on PATH is Java 8, **too old**. The build task sets JAVA_HOME for you.) |

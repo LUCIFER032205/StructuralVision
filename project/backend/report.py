@@ -109,7 +109,7 @@ def _crack_table(c, rows: list[tuple[int, dict]], y: float) -> float:
             c.setFillColorRGB(0.45, 0.45, 0.45)
             c.drawString(cols[1], y, "—")
             c.drawString(cols[2], y, "—")
-            c.drawString(cols[3], y, "not measured")
+            c.drawString(cols[3], y, "skipped" if d.get("status") == "skipped" else "not measured")
             continue
         c.drawString(cols[1], y, f"{m['length_cm']:.0f} cm")
         c.drawString(cols[2], y, _width_text(m))

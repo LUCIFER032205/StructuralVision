@@ -1,6 +1,8 @@
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:http/http.dart' as http;
+import 'package:path_provider/path_provider.dart';
 
 import 'config.dart';
 
@@ -63,6 +65,31 @@ class BuildingCatalog {
       ));
     }
     return out;
+  }
+
+  /// file:// URI of a catalog model kept on the phone after its first
+  /// download. The plugin's webGLB re-downloads on every placement, resize and
+  /// mode switch (10 MB for the apartment). Null if the download fails, so the
+  /// caller falls back to streaming from the URL.
+  // ponytail: keyed by file name forever; rename the file in manifest.json when a model changes.
+  static Future<String?> cached(BuildingType b) async {
+    try {
+      final dir = await getApplicationDocumentsDirectory();
+      final file = File('${dir.path}/catalog_${Uri.parse(b.uri).pathSegments.last}');
+      if (!await file.exists()) {
+        final r = await http
+            .get(Uri.parse(b.uri), headers: {'ngrok-skip-browser-warning': '1'})
+            .timeout(const Duration(seconds: 90));
+        if (r.statusCode != 200) return null;
+        // Write then rename: a half-written file would be "cached" forever.
+        final part = File('${file.path}.part');
+        await part.writeAsBytes(r.bodyBytes, flush: true);
+        await part.rename(file.path);
+      }
+      return Uri.file(file.path).toString();
+    } catch (_) {
+      return null;
+    }
   }
 
   /// Never throws: an unreachable backend still gets the legacy tower.

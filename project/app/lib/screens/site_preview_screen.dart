@@ -95,11 +95,11 @@ class _SitePreviewScreenState extends State<SitePreviewScreen> {
   }
 
   Future<bool> _addNode() async {
+    final local =
+        _building.isCustom ? _building.uri : await BuildingCatalog.cached(_building);
     final node = ARNode(
-      type: _building.isCustom
-          ? NodeType.fileSystemAppFolderGLB
-          : NodeType.webGLB,
-      uri: _building.uri,
+      type: local != null ? NodeType.fileSystemAppFolderGLB : NodeType.webGLB,
+      uri: local ?? _building.uri,
       scale: vm.Vector3.all(_building.scaleFor(_mode, roomSizeM: _roomSizeM)),
     );
     if (await _objects?.addNode(node, planeAnchor: _anchor) == true) {

@@ -36,7 +36,8 @@ class _BatchScreenState extends State<BatchScreen> {
     }
   }
 
-  Future<void> _open(ScanResult scan) async {
+  Future<void> _open(int i) async {
+    final scan = _results[i]!;
     if (_opening) return;
     setState(() => _opening = true);
     try {
@@ -46,6 +47,12 @@ class _BatchScreenState extends State<BatchScreen> {
       if (!mounted) return;
       await Navigator.of(context).push(MaterialPageRoute(
           builder: (_) => ResultScreen(result: scan, imageBytes: bytes)));
+      // Measuring happens on the result screen; refetch so the card shows the
+      // measured risk instead of the preliminary one it was built with.
+      try {
+        final fresh = await scanApi.getScan(scan.id);
+        if (mounted) setState(() => _results[i] = fresh);
+      } catch (_) {} // offline: keep the old card rather than claim "could not open"
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context)
@@ -145,7 +152,7 @@ class _BatchScreenState extends State<BatchScreen> {
                 return _SegmentCard(
                   index: i,
                   result: r,
-                  onTap: (r != null && !r.isError) ? () => _open(r) : null,
+                  onTap: (r != null && !r.isError) ? () => _open(i) : null,
                 );
               },
             ),
@@ -290,7 +297,8 @@ class _SegmentCard extends StatelessWidget {
                 const SizedBox(height: 3),
                 Text(
                   '${r.crackCount ?? 0} cracks  ·  '
-                  '${((r.crackAreaRatio ?? 0) * 100).toStringAsFixed(2)}% area',
+                  '${((r.crackAreaRatio ?? 0) * 100).toStringAsFixed(2)}% area'
+                  '${r.isMeasured ? '  ·  measured' : (r.crackCount ?? 0) > 0 ? '  ·  tap to measure' : ''}',
                   style: AppTextStyles.bodySm,
                 ),
               ],

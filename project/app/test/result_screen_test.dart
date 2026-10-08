@@ -40,6 +40,16 @@ void main() {
     'measured': _scan({
       'risk_source': 'measured', 'crack_width_mm': 0.5, 'damage_standard': 'JBDPA',
       'damage_class': 'II', 'damage_rating': 'Moderate', 'residual_capacity_pct': 60.0,
+      // Measuring is per crack: one measured, the other skipped = nothing left to do.
+      'detections': [
+        {'id': 'd1', 'bbox': [10, 10, 300, 40], 'polygon': [[10, 10], [300, 20], [300, 40], [10, 30]],
+         'confidence': 0.95, 'area_ratio': 0.02, 'status': 'measured',
+         'measurement': {'width_mm': 0.5, 'length_cm': 42.0, 'risk_level': 'MEDIUM', 'standard': 'JBDPA',
+                         'damage_class': 'II', 'rating': 'Moderate', 'uncertain': false,
+                         'width_mm_upper': 0.5, 'residual_capacity_pct': 60.0}},
+        {'id': 'd2', 'bbox': [50, 200, 400, 230], 'polygon': [[50, 200], [400, 210], [400, 230], [50, 220]],
+         'confidence': 0.55, 'area_ratio': 0.01, 'crack_type': 'paint', 'status': 'skipped'},
+      ],
     }),
     'no_cracks': _scan({'risk_level': 'LOW', 'crack_count': 0, 'crack_area_ratio': 0.0, 'detections': []}),
   };
@@ -60,7 +70,7 @@ void main() {
       } else {
         expect(find.textContaining('Measure crack'), findsNothing);
       }
-      if (e.key == 'no_cracks') expect(find.text('No cracks detected'), findsOneWidget);
+      if (e.key == 'no_cracks') expect(find.textContaining('No cracks detected'), findsOneWidget);
     });
   }
 }

@@ -9,11 +9,11 @@ Every path below is relative to the repo root. Line numbers were correct when th
 
 **What it is.** An Android app that checks building elements for cracks. You pick what you are pointing at (a wall, beam, column, slab or ceiling), take a photo, and a server-side AI model finds and outlines the cracks, gives a **risk level** (LOW / MEDIUM / HIGH), and can show the result in **AR** (augmented reality: 3D graphics placed over the live camera view). If you then tell the app how long the crack is, it estimates the crack's **width** and grades it against published engineering standards. It also produces PDF inspection reports and lets you place a 3D building model on an empty site in AR.
 
-**Who it's for.** It is a college major project (SVIT, 4-person team) titled *"Structural Vision AR: Intelligent Structural Health Assessment & Virtual Building Preview Platform"* ([project/structural_vision_ar_context__.md](project/structural_vision_ar_context__.md)). The docs leave the target user open: inspector or student demo ([project/docs/ui_ux_plan.md:99](project/docs/ui_ux_plan.md)).
+**Who it's for.** It is a college major project (SVIT, 4-person team) titled *"Structural Vision AR: Intelligent Structural Health Assessment & Virtual Building Preview Platform"*. The target user is left open: inspector or student demo.
 
 **The problem it solves.** Spotting and judging cracks by eye is slow and subjective. The app gives a fast, repeatable first opinion, ties it to a standard where possible, and keeps a history per user.
 
-The one-line pitch is in [README.md:3](README.md). The current end-to-end flow (*state the element → photograph → detect → risk → AR → standards grade*) is summarized at [project/docs/model_evolution_report.md:3-4](project/docs/model_evolution_report.md).
+The one-line pitch is in [README.md:3](README.md). The current end-to-end flow (*state the element → photograph → detect → risk → AR → standards grade*) is summarized at the model evolution report (moved out of the repo to the paper_publication folder).
 
 ---
 
@@ -47,14 +47,7 @@ The one-line pitch is in [README.md:3](README.md). The current end-to-end flow (
 StructuralVision/
 ├── README.md                      # Short pitch + generic setup (partly stale, see §16)
 ├── RUN_GUIDE.md                   # The real day-to-day run instructions (VS Code tasks, ngrok, APK build)
-├── TRAINING_FIX_GUIDE.md          # How to fix the "bad image crashes YOLO training" problem on Kaggle
-├── architecture_improvements.md   # Design notes (capture flow, model 2 ideas; partly superseded)
-├── find_problem_images.py         # Kaggle helper: list multi-frame / huge / unreadable images
-├── fix_problem_images.py          # Kaggle helper: repair or remove those images
-├── fix_local_dataset.py           # Copy merged dataset, force every label to class 0 "crack"
-├── TODO.md                        # Personal notes
 ├── StructuralVisionAR_*.docx/pdf  # Draft paper and team scripts
-├── docs/superpowers/specs/        # Burst-capture design spec
 └── project/
     ├── app/                       # ── Flutter Android app ──
     │   ├── pubspec.yaml           # Dart dependencies
@@ -65,7 +58,6 @@ StructuralVision/
     │   │   ├── models.dart        # ScanResult / CrackDetection (mirror backend JSON)
     │   │   ├── building_catalog.dart  # Loads the AR building list from the backend
     │   │   ├── theme.dart         # Colours, text styles
-    │   │   ├── ar_harness.dart    # Dev-only entry point that skips login and opens Building AR
     │   │   └── screens/           # One file per screen (camera, result, AR, batch, history, ...)
     │   ├── test/                  # Flutter unit + widget tests
     │   └── android/               # Android build config, manifest (permissions, ARCore requirement)
@@ -78,22 +70,16 @@ StructuralVision/
     │   ├── report.py              # Builds PDF reports
     │   ├── schema.sql             # Database tables + row-level security; run once in Supabase
     │   ├── check_setup.py         # Pre-flight checker (packages, .env, Supabase, model file, port)
-    │   ├── make_buildings.py      # Regenerates the preset AR building models + manifest
     │   ├── test_risk.py, test_report.py  # Backend tests (plain scripts)
     │   ├── .env.example           # Env var template
     │   └── static/                # Served at /static: marker GLBs, building GLBs + manifest.json
     ├── models/                    # Model weights (crack_seg.pt). NOT in git.
     ├── demo_kit/                  # 6 curated crack photos with known expected risk levels
-    ├── docs/                      # Plans, model evolution report, runbooks, checklists
-    ├── prepare_datasets.py        # Builds training folders for model 1 and model 2
-    ├── download_column_images.py  # Scrapes column photos for model 2
-    ├── zip_dataset.py             # Zips the crack dataset for Colab
-    ├── train_model1_crack.ipynb   # Colab notebook: train the crack segmenter
-    ├── train_model2_classifier.py # Train the component classifier (now unused)
-    └── export_model2_onnx.py      # Export that classifier to ONNX (now unused)
+    ├── docs/                      # Plans, runbooks, checklists
+    └── finetune_medium.py/.ipynb  # Kaggle: fine-tune the crack segmenter (v4, the model in use)
 ```
 
-Not in git but present on the author's machine (all gitignored, [.gitignore](.gitignore)): `datasets/`, `kaggle_tomo/` (v3/v4 Kaggle training), `tools/` (ngrok, JDK 17), `.vscode/` (the run tasks RUN_GUIDE refers to), `project/models/`, `.env`, `project/app/dart_defines.env`.
+Not in git but present on the author's machine (all gitignored, [.gitignore](.gitignore)): `datasets/` (the merged training set only), `tools/` (ngrok, JDK 17), `.vscode/` (the run tasks RUN_GUIDE refers to), `project/models/`, `.env`, `project/app/dart_defines.env`.
 
 ---
 
@@ -180,11 +166,6 @@ Started with `uvicorn main:app --host 0.0.0.0 --port 8000` from `project/backend
 3. `Supabase.initialize(url, publishableKey)` (lines 20-23). Both values come from `--dart-define` at build time.
 4. `runApp(ProviderScope(child: App()))` (line 24).
 5. `App` (lines 30-44) watches `authStateProvider`, a stream of login events. If there is a session, `home` is `CameraScreen`; otherwise `LoginScreen`. Signing in or out rebuilds `App` and swaps the screen automatically. No navigation code is involved.
-
-A second, dev-only entry point, [project/app/lib/ar_harness.dart](project/app/lib/ar_harness.dart), skips Supabase and opens the Building AR screen directly, which is useful on an emulator:
-```bash
-flutter run -t lib/ar_harness.dart --dart-define=DEFAULT_API_BASE=http://10.0.2.2:8000
-```
 
 ---
 
@@ -291,7 +272,7 @@ Each photo is uploaded one after another with `submitScan`. [batch_screen.dart](
 
 ### 6.8 Building AR (site preview)
 1. The apartment icon on the camera screen opens [site_preview_screen.dart](project/app/lib/screens/site_preview_screen.dart).
-2. `BuildingCatalog.fetch()` ([building_catalog.dart:63-76](project/app/lib/building_catalog.dart)) loads `/static/buildings/manifest.json`. That manifest is generated by [make_buildings.py](project/backend/make_buildings.py) and lists house, apartment, office and tower. If the fetch fails, the app falls back to a 20 m demo tower.
+2. `BuildingCatalog.fetch()` ([building_catalog.dart:63-76](project/app/lib/building_catalog.dart)) loads `/static/buildings/manifest.json`. That manifest lists house, apartment, office and tower. If the fetch fails, the app falls back to a 20 m demo tower.
 3. Two size modes:
    - **Room mode** (default) shows a miniature 0.2-1.5 m model on a table.
    - **Site mode** shows the building at its real size.
@@ -591,7 +572,7 @@ python test_risk.py
 ```bash
 python test_report.py
 ```
-Self-checks also run on `python overlay.py` and `python make_buildings.py`.
+Self-checks also run on `python overlay.py`.
 
 **App** ([project/app/test/](project/app/test/)): pure unit and widget tests, no device or backend needed. Run from `project/app` (the contract test reads its fixture by relative path).
 - `models_test.dart`: JSON parsing and grade summaries.
@@ -629,7 +610,7 @@ There is no cloud deployment, CI/CD, Docker or Procfile in the repo.
 5. [project/app/lib/scan_api.dart](project/app/lib/scan_api.dart) and [models.dart](project/app/lib/models.dart): the app's whole contract with the backend.
 6. [project/app/lib/screens/camera_screen.dart](project/app/lib/screens/camera_screen.dart): where every user flow starts.
 7. [project/app/lib/screens/result_screen.dart](project/app/lib/screens/result_screen.dart): how results are shown, and the gateway to measurement and AR.
-8. [project/docs/model_evolution_report.md](project/docs/model_evolution_report.md): why the model and thresholds are what they are (v1→v4, rejected ideas, hairline limits).
+8. The model evolution report (moved out of the repo to the paper_publication folder): why the model and thresholds are what they are (v1→v4, rejected ideas, hairline limits).
 9. [project/backend/auth.py](project/backend/auth.py) and [db.py](project/backend/db.py): short, and they explain security and storage.
 10. [project/app/lib/screens/ar_screen.dart](project/app/lib/screens/ar_screen.dart): AR placement, measuring and the crash guards.
 
@@ -641,14 +622,14 @@ There is no cloud deployment, CI/CD, Docker or Procfile in the repo.
 - **A stale widget test:** `result_screen_test.dart:59` expects "Measure crack".
 
 **Fragile or surprising**
-- **Working directory matters.** `StaticFiles(directory="static")` and `make_buildings.py` assume you start from `project/backend/`.
+- **Working directory matters.** `StaticFiles(directory="static")` assumes you start from `project/backend/`.
 - **Retries can duplicate scans.** `submitScan` retries on *any* exception, including 4xx/5xx, and a retry after a timeout can create a duplicate scan ([scan_api.dart:50-52](project/app/lib/scan_api.dart)).
 - **No validation of `component_type` in Python.** A bad value only fails at the DB check constraint, and the scan ends up as `error`.
 - **JWKS cache isn't refreshed** on an unknown `kid`. After Supabase rotates keys you can get up to an hour of 401s.
 - **`schema.sql` isn't re-runnable**, because `create policy` has no `if not exists`.
 - **The overlay GLB is always 1 m wide**, not the crack's real size (`ponytail:` note in [ar_screen.dart:222-223](project/app/lib/screens/ar_screen.dart)).
 - **Hairline cracks:**
-  - The model misses about 30% of cracks: hairline, low contrast or unlabeled ([model_evolution_report.md:79-84](project/docs/model_evolution_report.md)).
+  - The model misses about 30% of cracks: hairline, low contrast or unlabeled (the model evolution report (moved out of the repo to the paper_publication folder)).
   - `project/demo_kit/missed.jpeg` (untracked) is a known miss.
   - Tier-1 risk depends on how close you stand, because area ratio changes with framing.
 
@@ -665,8 +646,8 @@ There is no cloud deployment, CI/CD, Docker or Procfile in the repo.
   - Points to a shared-drive link that isn't documented.
 - **[project/app/README.md](project/app/README.md)** is the untouched Flutter template, yet `config.dart:11` tells you to read it.
 - **Old paths in runbooks.** `walkthrough-guide.md`, `device-test-checklist.md` and `remote-demo-runbook.md` use an old path `F:\Major_project\...` and an obsolete `.env` sourcing step.
-- **Model 2.** [architecture_improvements.md](architecture_improvements.md) still describes Model 2 (the component classifier) as active. It was removed 2026-09-08; the user's pick is now authoritative ([inference.py:8-11](project/backend/inference.py)).
-- **Model v1 architecture.** v1 is called YOLOv8s-seg in the report but YOLOv8n-seg in the notebook and `prepare_datasets.py`.
+- **Model 2.** The component classifier was removed 2026-09-08; the user's pick is now authoritative ([inference.py:8-11](project/backend/inference.py)).
+- **Model v1 architecture.** v1 is called YOLOv8s-seg in the report but YOLOv8n-seg in the original (now removed) training notebook.
 
 **Repo hygiene**
 - `pubspec.lock` is gitignored, so app builds aren't reproducible.
@@ -744,8 +725,8 @@ Do these in order. Each step should take under an hour.
    - Call `GET /scan/{id}/report` on a *measured* scan and open the PDF. The assessment line shows the standard and, when the photo and mask disagree, a width range.
    - *Exercise:* read `_width_range` in [report.py](project/backend/report.py) and `test_measured_scan_report_shows_width_range` in `test_report.py`. Change the fixture's `width_px` from 40 to 2 and predict whether the range line still appears before rerunning.
 9. **Explore AR.**
-   - Run `flutter run -t lib/ar_harness.dart` to try Building AR without logging in.
+   - Open Site preview in the app to try Building AR.
    - *Exercise:* add a fifth building to `static/buildings/manifest.json` that reuses an existing GLB with a different `size_m`, and confirm it shows up in the sheet. No app rebuild is needed.
 10. **Read the model history.**
-    - Read [model_evolution_report.md](project/docs/model_evolution_report.md), focusing on why v3 was rejected, why v4 won on image-level accuracy, and why hairline widths can't come from masks.
-    - Then skim [train_model1_crack.ipynb](project/train_model1_crack.ipynb) to see how a model is trained.
+    - Read the model evolution report (moved out of the repo to the paper_publication folder), focusing on why v3 was rejected, why v4 won on image-level accuracy, and why hairline widths can't come from masks.
+    - Then skim [finetune_medium.py](project/finetune_medium.py) to see how the model in use was trained.

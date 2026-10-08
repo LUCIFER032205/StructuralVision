@@ -105,7 +105,7 @@ def test_per_crack_table_numbers_by_size_and_footnotes_dismissed():
                            _crack(0.03, "not_crack")])
     _, drawn, _ = _drawn([(scan, _jpeg())])
     assert "42 cm" in drawn and "0.61 mm" in drawn and "JBDPA II · Moderate" in drawn
-    assert "not measured" in drawn
+    assert "skipped" in drawn and "not measured" not in drawn
     assert "1 detection dismissed as not a crack." in drawn
     text = " ".join(drawn)   # the assessment wraps across lines
     assert "worst crack #1" in text and "1 of 2 cracks measured" in text, drawn

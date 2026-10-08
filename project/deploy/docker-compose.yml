@@ -1,0 +1,28 @@
+# Run on the cloud VM from this folder:  docker compose up -d --build
+# See DEPLOY_GUIDE.md at the repo root.
+services:
+  api:
+    build: ../backend
+    env_file: ../backend/.env          # SUPABASE_URL, SUPABASE_SERVICE_KEY, KEEPALIVE_HOURS
+    volumes:
+      - ../models:/app/models:ro       # crack_seg.pt, copied to the VM by hand
+    restart: unless-stopped
+
+  caddy:                               # HTTPS in front of the api, certificate renewed automatically
+    image: caddy:2
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      DOMAIN: ${DOMAIN:?set DOMAIN in deploy/.env}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - api
+    restart: unless-stopped
+
+volumes:
+  caddy_data:
+  caddy_config:

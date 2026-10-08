@@ -57,6 +57,12 @@ The `.pt` weight files are excluded from git (binary, ~50 MB each). Download the
 
 ---
 
+## Deploying
+
+To run the backend on a free cloud server (no PC or ngrok needed), set up signup emails, and ship the APK, see [DEPLOY_GUIDE.md](DEPLOY_GUIDE.md).
+
+---
+
 ## Environment variables reference
 
 | Variable | Where | Description |
@@ -66,3 +72,4 @@ The `.pt` weight files are excluded from git (binary, ~50 MB each). Download the
 | `SUPABASE_JWT_SECRET` | `.env` only | JWT signing secret |
 | `SUPABASE_ANON_KEY` | `--dart-define` | Publishable anon key for the Flutter app |
 | `DEFAULT_API_BASE` | `--dart-define` | Base URL of the FastAPI server |
+| `KEEPALIVE_HOURS` | `.env` only | Hours between queries that stop free Supabase pausing (default 12, `0` = off) |

@@ -474,6 +474,30 @@ class _CameraScreenState extends State<CameraScreen> {
                       ),
                     ),
 
+                    // Distance is the main detection failure: from a few metres
+                    // a crack is a few pixels and groove lines/cables win.
+                    if (!busy && !isRecording)
+                      Positioned(
+                        top: MediaQuery.of(context).padding.top + kToolbarHeight + 12,
+                        left: 0,
+                        right: 0,
+                        child: IgnorePointer(
+                          child: Center(
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                              decoration: BoxDecoration(
+                                color: Colors.black.withValues(alpha: 0.5),
+                                borderRadius: BorderRadius.circular(20),
+                              ),
+                              child: Text(
+                                'Get close: fill the frame with the crack',
+                                style: AppTextStyles.bodySm.copyWith(color: Colors.white),
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+
                     if (busy) _ProcessingOverlay(status: _status!),
 
                     // ── Bottom: shots · zoom · mode · shutter ────────────

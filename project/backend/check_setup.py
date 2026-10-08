@@ -28,7 +28,7 @@ def bad(msg, fix):
 
 print("\n1. Python + packages")
 ok(f"Python {sys.version.split()[0]} at {sys.executable}")
-for mod in ["fastapi", "uvicorn", "multipart", "ultralytics", "PIL", "numpy", "supabase", "jose"]:
+for mod in ["fastapi", "uvicorn", "multipart", "ultralytics", "PIL", "numpy", "supabase", "jose", "reportlab", "trimesh"]:
     try:
         importlib.import_module(mod)
         ok(mod)
@@ -94,16 +94,12 @@ if url and key:
     except urllib.error.URLError as e:
         bad(f"cannot reach Supabase: {e.reason}", "check internet / VPN (Cloudflare WARP) / project paused")
 
-print("\n4. Model files")
-models = HERE.parent / "models"
-for f in ["crack_seg.pt", "component.onnx"]:
-    p = models / f
-    if p.exists():
-        ok(f"{f} ({p.stat().st_size // 1_000_000} MB)")
-    elif f == "crack_seg.pt":
-        bad(f"{p} missing", "copy the trained weights into project/models/")
-    else:
-        print(f"  [info] {f} not found (optional)")
+print("\n4. Model file")
+p = HERE.parent / "models" / "crack_seg.pt"
+if p.exists():
+    ok(f"crack_seg.pt ({p.stat().st_size // 1_000_000} MB)")
+else:
+    bad(f"{p} missing", "copy the trained weights into project/models/")
 
 print("\n5. Port 8000 + network")
 with socket.socket() as s:

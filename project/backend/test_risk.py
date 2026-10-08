@@ -4,7 +4,7 @@ and BRE Digest 251 (categories 0-5)."""
 import numpy as np
 
 from inference import (measured_risk, width_from_measurement,
-                       implausible_measurement)
+                       implausible_measurement, crack_measurement, summarize)
 
 
 def test_jbdpa_column_brittle_eta():
@@ -46,13 +46,47 @@ def test_out_of_scope_is_low():
     assert measured_risk(5.0, "column", crack_type="paint")["risk_level"] == "LOW"
 
 
-def test_width_from_measurement_uses_largest_crack():
-    dets = [{"area_ratio": 0.01, "length_px": 100.0, "width_px": 50.0, "crack_type": "paint"},
-            {"area_ratio": 0.05, "length_px": 400.0, "width_px": 2.0, "crack_type": "structural"}]
-    w = width_from_measurement(20.0, dets)                   # 200 mm * 2/400
+def test_width_from_measurement_grades_the_given_crack():
+    d = {"area_ratio": 0.01, "length_px": 400.0, "width_px": 2.0, "crack_type": "structural"}
+    w = width_from_measurement(20.0, d)                       # 200 mm * 2/400
     assert (round(w["width_mm"], 3), w["crack_type"]) == (1.0, "structural")
-    assert w["uncertain"] is False                           # no photo -> mask only
-    assert width_from_measurement(20.0, []) is None
+    assert w["uncertain"] is False                            # no photo -> mask only
+    assert width_from_measurement(20.0, {"area_ratio": 0.01}) is None
+
+
+def test_crack_measurement_is_the_stored_per_crack_result():
+    d = {"area_ratio": 0.01, "length_px": 400.0, "width_px": 2.0, "crack_type": "structural"}
+    m = crack_measurement(20.0, d, "column")
+    assert (m["length_cm"], round(m["width_mm"], 3), m["damage_class"], m["standard"]) ==         (20.0, 1.0, "II", "JBDPA")
+    assert crack_measurement(20.0, {"area_ratio": 0.01}, "column") is None
+
+
+def _det(area, status=None, risk=None, width=None):
+    d = {"area_ratio": area, "crack_type": "structural", "status": status}
+    if status == "measured":
+        d["measurement"] = {"risk_level": risk, "width_mm": width, "standard": "JBDPA",
+                            "damage_class": "II", "rating": "Moderate",
+                            "residual_capacity_pct": 60.0}
+    return d
+
+
+def test_wall_summary_follows_the_worst_measured_crack():
+    s = summarize([_det(0.05, "measured", "LOW", 0.1),
+                   _det(0.01, "measured", "MEDIUM", 0.6), _det(0.02)], "rc_wall")
+    assert (s["risk_source"], s["risk_level"], s["crack_width_mm"], s["crack_count"]) ==         ("measured", "MEDIUM", 0.6, 3)
+
+
+def test_not_a_crack_drops_out_of_count_area_and_preliminary_risk():
+    # the ceiling-edge false alarm alone makes this column HIGH (0.065 * 1.5)
+    assert summarize([_det(0.06), _det(0.005)], "column")["risk_level"] == "HIGH"
+    s = summarize([_det(0.06, "not_crack"), _det(0.005)], "column")
+    assert s["crack_count"] == 1 and abs(s["crack_area_ratio"] - 0.005) < 1e-9
+    assert (s["risk_source"], s["risk_level"], s["crack_width_mm"]) == ("preliminary", "LOW", None)
+
+
+def test_everything_dismissed_is_zero_cracks_low():
+    s = summarize([_det(0.06, "not_crack")], "column")
+    assert (s["crack_count"], s["crack_area_ratio"], s["risk_level"]) == (0, 0, "LOW")
 
 
 def test_thin_crack_grades_off_the_photo_not_the_bloated_mask():
@@ -66,8 +100,8 @@ def test_thin_crack_grades_off_the_photo_not_the_bloated_mask():
     poly = [[199.0, 10.0], [201.0, 10.0], [201.0, 390.0], [199.0, 390.0]]
     dets = [{"area_ratio": 0.05, "length_px": 380.0, "width_px": 24.0,
              "crack_type": "structural", "polygon": poly}]
-    mask_only = width_from_measurement(100.0, dets)
-    with_photo = width_from_measurement(100.0, dets, 400, gray)
+    mask_only = width_from_measurement(100.0, dets[0])
+    with_photo = width_from_measurement(100.0, dets[0], gray)
     # mask says 24/380 of 1000 mm = 63 mm; the actual line is ~2 px = ~5 mm
     assert mask_only["width_mm"] > 50
     assert with_photo["width_mm"] < 15, with_photo

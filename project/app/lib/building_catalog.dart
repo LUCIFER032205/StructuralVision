@@ -1,6 +1,8 @@
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:http/http.dart' as http;
+import 'package:path_provider/path_provider.dart';
 
 import 'config.dart';
 
@@ -23,6 +25,11 @@ class BuildingType {
     this.isCustom = false,
   });
 
+  /// Smallest room-mode size that still reads as a building: about 1:80,
+  /// so a storey is >= ~4 cm. A 24 m block at 20 cm (1:120) was just a box.
+  double get roomMinM => BuildingCatalog.roomSteps
+      .firstWhere((m) => m >= sizeM / 80, orElse: () => BuildingCatalog.roomSteps.last);
+
   /// Plugin scale = largest model dimension in metres (see site_preview_screen).
   double scaleFor(PreviewMode mode,
           {double roomSizeM = BuildingCatalog.roomDefaultM}) =>
@@ -31,6 +38,7 @@ class BuildingType {
 
 class BuildingCatalog {
   static const roomDefaultM = 0.4;
+  static const roomSteps = [0.2, 0.4, 0.8, 1.5]; // tabletop .. coffee-table size
 
   static BuildingType get fallback => BuildingType(
         id: 'tower',
@@ -57,6 +65,31 @@ class BuildingCatalog {
       ));
     }
     return out;
+  }
+
+  /// file:// URI of a catalog model kept on the phone after its first
+  /// download. The plugin's webGLB re-downloads on every placement, resize and
+  /// mode switch (10 MB for the apartment). Null if the download fails, so the
+  /// caller falls back to streaming from the URL.
+  // ponytail: keyed by file name forever; rename the file in manifest.json when a model changes.
+  static Future<String?> cached(BuildingType b) async {
+    try {
+      final dir = await getApplicationDocumentsDirectory();
+      final file = File('${dir.path}/catalog_${Uri.parse(b.uri).pathSegments.last}');
+      if (!await file.exists()) {
+        final r = await http
+            .get(Uri.parse(b.uri), headers: {'ngrok-skip-browser-warning': '1'})
+            .timeout(const Duration(seconds: 90));
+        if (r.statusCode != 200) return null;
+        // Write then rename: a half-written file would be "cached" forever.
+        final part = File('${file.path}.part');
+        await part.writeAsBytes(r.bodyBytes, flush: true);
+        await part.rename(file.path);
+      }
+      return Uri.file(file.path).toString();
+    } catch (_) {
+      return null;
+    }
   }
 
   /// Never throws: an unreachable backend still gets the legacy tower.

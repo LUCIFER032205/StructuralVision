@@ -58,7 +58,7 @@ class AppTextStyles {
 
 const kCardRadius   = 12.0;
 const kButtonRadius = 10.0;
-const kPagePadding  = 20.0;
+const kPagePadding  = 24.0;
 
 ThemeData buildAppTheme() {
   return ThemeData(
@@ -140,9 +140,10 @@ ThemeData buildAppTheme() {
         borderRadius: BorderRadius.circular(kButtonRadius),
         borderSide: const BorderSide(color: AppColors.border),
       ),
+      // Filled fields need no outline at rest; the accent ring marks focus.
       enabledBorder: OutlineInputBorder(
         borderRadius: BorderRadius.circular(kButtonRadius),
-        borderSide: const BorderSide(color: AppColors.border),
+        borderSide: BorderSide.none,
       ),
       focusedBorder: OutlineInputBorder(
         borderRadius: BorderRadius.circular(kButtonRadius),
@@ -196,11 +197,9 @@ class AppCard extends StatelessWidget {
       child: InkWell(
         borderRadius: BorderRadius.circular(kCardRadius),
         onTap: onTap,
-        child: Container(
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(kCardRadius),
-            border: Border.all(color: AppColors.border),
-          ),
+        // No outline: cards separate from the page by tone alone, so stacked
+        // cards read as calm blocks instead of a grid of boxes.
+        child: Padding(
           padding: padding ?? const EdgeInsets.all(16),
           child: child,
         ),
@@ -235,7 +234,6 @@ class RiskBadge extends StatelessWidget {
       decoration: BoxDecoration(
         color: _color.withValues(alpha: 0.15),
         borderRadius: BorderRadius.circular(6),
-        border: Border.all(color: _color.withValues(alpha: 0.5)),
       ),
       child: Text(
         risk,

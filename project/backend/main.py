@@ -28,7 +28,7 @@ from fastapi import FastAPI, UploadFile, File, Form, BackgroundTasks, HTTPExcept
 from fastapi.responses import Response
 from fastapi.staticfiles import StaticFiles
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageOps
 from pydantic import BaseModel, Field
 
 from inference import (run_scan, load_models, crack_measurement, summarize,
@@ -55,9 +55,22 @@ app = FastAPI(title="Structural Vision AR", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
 
+def _upright(image_bytes: bytes) -> bytes:
+    """Bake the EXIF rotation into the pixels. Phones like the S21 save sideways
+    pixels plus an 'rotate 90' tag; the app honours the tag, PIL does not, so
+    without this the masks come back in a different frame than the photo."""
+    img = Image.open(io.BytesIO(image_bytes))
+    if img.getexif().get(0x0112, 1) == 1:
+        return image_bytes
+    buf = io.BytesIO()
+    ImageOps.exif_transpose(img).convert("RGB").save(buf, "JPEG", quality=95)
+    return buf.getvalue()
+
+
 def _process(scan_id: str, image_bytes: bytes, prev_scan_id: str | None = None,
              component_type: str | None = None):
     try:
+        image_bytes = _upright(image_bytes)
         result = run_scan(image_bytes, component_type)
         if prev_scan_id:
             prev = db.get_scan_unauth(prev_scan_id)

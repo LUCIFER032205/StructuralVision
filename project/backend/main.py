@@ -32,6 +32,11 @@ import numpy as np
 from PIL import Image, ImageOps
 from pydantic import BaseModel, Field
 
+# Reject decompression bombs: a tiny file that expands to billions of pixels
+# would OOM the box when PIL opens it. Phone photos are ~12MP; 50MP is headroom.
+Image.MAX_IMAGE_PIXELS = 50_000_000
+MAX_UPLOAD_BYTES = 25 * 1024 * 1024  # 25 MB cap on the raw upload
+
 from inference import (run_scan, load_models, crack_measurement, summarize,
                        implausible_measurement)
 from auth import current_user
@@ -87,13 +92,15 @@ def _upright(image_bytes: bytes) -> bytes:
     return buf.getvalue()
 
 
-def _process(scan_id: str, image_bytes: bytes, prev_scan_id: str | None = None,
-             component_type: str | None = None):
+def _process(scan_id: str, image_bytes: bytes, user_id: str,
+             prev_scan_id: str | None = None, component_type: str | None = None):
     try:
         image_bytes = _upright(image_bytes)
         result = run_scan(image_bytes, component_type)
         if prev_scan_id:
-            prev = db.get_scan_unauth(prev_scan_id)
+            # Scope to the caller: the previous scan must be the user's own, or
+            # anyone could diff their scan against another user's crack data.
+            prev = db.get_scan(prev_scan_id, user_id)
             if prev and prev.get("detections"):
                 from inference import diff_detections
                 result["detections"] = diff_detections(prev["detections"], result["detections"])
@@ -103,7 +110,8 @@ def _process(scan_id: str, image_bytes: bytes, prev_scan_id: str | None = None,
             image_url = None  # history item just won't have a photo
         db.finish_scan(scan_id, result, image_url)
     except Exception as e:
-        db.fail_scan(scan_id, str(e))
+        print(f"scan {scan_id} failed: {e!r}")   # full detail stays in the server log
+        db.fail_scan(scan_id, "processing failed")  # client sees a generic reason
 
 
 @app.post("/scan")
@@ -116,9 +124,12 @@ async def create_scan(
     component_type: str | None = Form(None),
     user_id: str = Depends(current_user),
 ):
-    image_bytes = await image.read()
+    # Read one byte past the cap so an oversized upload is rejected, not buffered whole.
+    image_bytes = await image.read(MAX_UPLOAD_BYTES + 1)
+    if len(image_bytes) > MAX_UPLOAD_BYTES:
+        raise HTTPException(413, "image too large (max 25 MB)")
     scan_id = db.create_scan(user_id)
-    bg.add_task(_process, scan_id, image_bytes, prev_scan_id, component_type)
+    bg.add_task(_process, scan_id, image_bytes, user_id, prev_scan_id, component_type)
     return {"scan_id": scan_id, "status": "pending"}
 
 

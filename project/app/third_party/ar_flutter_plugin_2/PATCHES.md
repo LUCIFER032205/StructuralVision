@@ -7,9 +7,12 @@ in `android/src/main/kotlin/com/uhg0/ar_flutter_plugin_2/ArView.kt`.
 1. **Drag and twist, scene-wide.** Upstream `onMoveBegin` discarded its own
    result, SceneView's node drag moved models the wrong way, and twist never
    fired. Node-level editing is off; `setOnGestureListener` now drags the model
-   under the finger (else the only model) along the tracked plane under the
-   finger, from the grab point, and twists it about the vertical anywhere on
-   screen. The final local position + yaw goes back to Dart as `onPanEnd` /
+   under the finger (else the only model) along the flat level it stands on,
+   from the grab point, and twists it about the vertical anywhere on screen.
+   SceneView's `onMove` hands every step the event the drag began with, so the
+   finger's position comes from `MoveGestureDetector.currentMotionEvent`. The
+   drag uses the tracked plane under the finger, else a ray from ARCore's camera
+   to that level, so it carries on past the edge of the detected plane. The final local position + yaw goes back to Dart as `onPanEnd` /
    `onRotationEnd`. Yaw is accumulated per node, never read back from
    `Node.rotation`: that comes from `Quaternion.toEulerAngles()`, whose yaw is an
    asin capped at +-90 degrees, which pinned a twist at 90.

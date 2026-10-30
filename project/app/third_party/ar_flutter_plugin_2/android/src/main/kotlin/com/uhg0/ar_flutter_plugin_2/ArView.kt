@@ -58,6 +58,7 @@ import io.github.sceneview.math.Scale
 import io.github.sceneview.math.colorOf
 import io.github.sceneview.loaders.MaterialLoader
 import com.google.ar.core.exceptions.SessionPausedException
+import dev.romainguy.kotlin.math.normalize
 
 class ArView(
     context: Context,
@@ -99,12 +100,30 @@ class ArView(
         return nodesMap.values.singleOrNull()
     }
 
-    /** Tracked plane under the finger, from the current frame (no session.update()). */
-    private fun planeHit(e: MotionEvent): com.google.ar.core.Pose? =
-        sceneView.frame?.hitTest(e)?.firstOrNull { hit ->
+    /**
+     * Where the finger points on the flat level the model stands on: the tracked plane
+     * under it, else a ray built from ARCore's camera, so a drag carries on past the
+     * edge of the detected plane.
+     */
+    private fun groundPoint(e: MotionEvent, y: Float): Float3? {
+        val frame = sceneView.frame ?: return null
+        frame.hitTest(e).firstOrNull { hit ->
             val t = hit.trackable
             t is Plane && t.trackingState == TrackingState.TRACKING && t.isPoseInPolygon(hit.hitPose)
-        }?.hitPose
+        }?.hitPose?.let { return Float3(it.tx(), y, it.tz()) }
+
+        val proj = FloatArray(16)
+        frame.camera.getProjectionMatrix(proj, 0, 0.1f, 100f)
+        val ndcX = 2f * e.x / sceneView.width - 1f
+        val ndcY = 1f - 2f * e.y / sceneView.height
+        val pose = frame.camera.displayOrientedPose
+        val r = pose.rotateVector(floatArrayOf((ndcX + proj[8]) / proj[0], (ndcY + proj[9]) / proj[5], -1f))
+        val dir = normalize(Float3(r[0], r[1], r[2]))
+        // ponytail: 1 degree below the horizon at most, so a finger on the upper part
+        // of a tall model still grabs it. Far drags on a desk can overshoot; drag back.
+        val t = (y - pose.ty()) / minOf(dir.y, -0.02f)
+        return if (t > 0f) Float3(pose.tx() + dir.x * t, y, pose.tz() + dir.z * t) else null
+    }
 
     /** Local position + yaw as a column-major 4x4, the shape transformationChanged reads. */
     private fun notifyPlacement(node: ModelNode, method: String) {
@@ -543,25 +562,28 @@ class ArView(
                     // PATCH(structural-vision): drag + twist, see PATCHES.md.
                     onMoveBegin = { _: MoveGestureDetector, e: MotionEvent, node: Node? ->
                         val model = if (handlePans) pickModel(node) else null
-                        val hit = model?.let { planeHit(e) }
+                        val hit = model?.let { groundPoint(e, it.worldPosition.y) }
                         if (model != null && hit != null) {
                             dragNode = model
                             // Grab point, not centre: the model must not jump
                             // under the finger when the drag starts off-centre.
                             dragOffset = Float3(
-                                model.worldPosition.x - hit.tx(),
+                                model.worldPosition.x - hit.x,
                                 0f,
-                                model.worldPosition.z - hit.tz()
+                                model.worldPosition.z - hit.z
                             )
                         }
                     },
-                    onMove = { _: MoveGestureDetector, e: MotionEvent, _: Node? ->
+                    onMove = { d: MoveGestureDetector, _: MotionEvent, _: Node? ->
                         val model = dragNode
-                        val hit = model?.let { planeHit(e) }
+                        // SceneView passes the event the drag began with on every
+                        // step, so the finger's real position is only on the detector.
+                        val hit = d.currentMotionEvent?.let { e ->
+                            model?.let { groundPoint(e, it.worldPosition.y) }
+                        }
                         if (model != null && hit != null) {
-                            val wp = model.worldPosition
                             model.worldPosition = Float3(
-                                hit.tx() + dragOffset.x, wp.y, hit.tz() + dragOffset.z
+                                hit.x + dragOffset.x, hit.y, hit.z + dragOffset.z
                             )
                         }
                     },

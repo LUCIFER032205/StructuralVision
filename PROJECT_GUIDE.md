@@ -13,7 +13,7 @@ Every path below is relative to the repo root. Line numbers were correct when th
 
 **The problem it solves.** Spotting and judging cracks by eye is slow and subjective. The app gives a fast, repeatable first opinion, ties it to a standard where possible, and keeps a history per user.
 
-The one-line pitch is in [README.md:3](README.md). The current end-to-end flow (*state the element → photograph → detect → risk → AR → standards grade*) is summarized at the model evolution report (moved out of the repo to the paper_publication folder).
+The one-line pitch is in [README.md:3](README.md). The current end-to-end flow (*state the element → photograph → detect → risk → AR → standards grade*) is summarized at the model evolution report (kept outside the repo).
 
 ---
 
@@ -609,7 +609,7 @@ There is no cloud deployment, CI/CD, Docker or Procfile in the repo.
 5. [project/app/lib/scan_api.dart](project/app/lib/scan_api.dart) and [models.dart](project/app/lib/models.dart): the app's whole contract with the backend.
 6. [project/app/lib/screens/camera_screen.dart](project/app/lib/screens/camera_screen.dart): where every user flow starts.
 7. [project/app/lib/screens/result_screen.dart](project/app/lib/screens/result_screen.dart): how results are shown, and the gateway to measurement and AR.
-8. The model evolution report (moved out of the repo to the paper_publication folder): why the model and thresholds are what they are (v1→v4, rejected ideas, hairline limits).
+8. The model evolution report (kept outside the repo): why the model and thresholds are what they are (v1→v4, rejected ideas, hairline limits).
 9. [project/backend/auth.py](project/backend/auth.py) and [db.py](project/backend/db.py): short, and they explain security and storage.
 10. [project/app/lib/screens/ar_screen.dart](project/app/lib/screens/ar_screen.dart): AR placement, measuring and the crash guards.
 
@@ -628,7 +628,7 @@ There is no cloud deployment, CI/CD, Docker or Procfile in the repo.
 - **`schema.sql` isn't re-runnable**, because `create policy` has no `if not exists`.
 - **The overlay GLB is always 1 m wide**, not the crack's real size (`ponytail:` note in [ar_screen.dart:222-223](project/app/lib/screens/ar_screen.dart)).
 - **Hairline cracks:**
-  - The model misses about 30% of cracks: hairline, low contrast or unlabeled (the model evolution report (moved out of the repo to the paper_publication folder)).
+  - The model misses about 30% of cracks: hairline, low contrast or unlabeled (the model evolution report (kept outside the repo)).
   - `project/demo_kit/missed.jpeg` (untracked) is a known miss.
   - Tier-1 risk depends on how close you stand, because area ratio changes with framing.
 
@@ -727,5 +727,5 @@ Do these in order. Each step should take under an hour.
    - Open Site preview in the app to try Building AR.
    - *Exercise:* add a fifth building to `static/buildings/manifest.json` that reuses an existing GLB with a different `size_m`, and confirm it shows up in the sheet. No app rebuild is needed.
 10. **Read the model history.**
-    - Read the model evolution report (moved out of the repo to the paper_publication folder), focusing on why v3 was rejected, why v4 won on image-level accuracy, and why hairline widths can't come from masks.
+    - Read the model evolution report (kept outside the repo), focusing on why v3 was rejected, why v4 won on image-level accuracy, and why hairline widths can't come from masks.
     - Then skim [finetune_medium.ipynb](project/finetune_medium.ipynb) to see how the model in use was trained.

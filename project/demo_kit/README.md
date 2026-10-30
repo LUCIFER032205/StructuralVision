@@ -26,4 +26,4 @@ For the demo use high_1 / medium_1 / low_1 — those grade exactly as labeled.
 > `missed.jpeg` (added 2026-09-16) is NOT part of the graded kit — it is the
 > façade photograph the model misses entirely at conf 0.4, kept as the only
 > local reproduction of that failure. See §5b of
-> the model evolution report (moved out of the repo to the paper_publication folder) before trying to "fix" it.
+> the model evolution report (kept outside the repo) before trying to "fix" it.
